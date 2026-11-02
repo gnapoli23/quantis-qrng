@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  test:
+    name: Test (${{ matrix.rust }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        rust: [stable, "1.85"] # 1.85 = MSRV, keep in sync with rust-version in Cargo.toml
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup toolchain install ${{ matrix.rust }} --profile minimal --component clippy
+      - run: rustup default ${{ matrix.rust }}
+      - run: cargo build --all-targets
+      - run: cargo test
+      - run: cargo clippy --all-targets
+
+  fmt:
+    name: Rustfmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup toolchain install stable --profile minimal --component rustfmt
+      - run: cargo fmt --all --check
+
+  docs:
+    name: Docs
+    runs-on: ubuntu-latest
+    env:
+      RUSTDOCFLAGS: -D warnings
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup toolchain install stable --profile minimal
+      - run: cargo doc --no-deps
