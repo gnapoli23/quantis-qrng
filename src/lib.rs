@@ -7,4 +7,5 @@
 //! This crate is not affiliated with or endorsed by ID Quantique SA.
 //! "Quantis" is a trademark of ID Quantique SA.
 
+pub mod transport;
 pub mod usb;

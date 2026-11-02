@@ -13,6 +13,7 @@ authors = ["Giovanni Napoli"]
 include = ["/src", "/README.md", "/LICENSE-MIT", "/LICENSE-APACHE", "/NOTICE"]
 
 [dependencies]
+thiserror = "2"
 
 [lints.rust]
 unsafe_code = "forbid"
