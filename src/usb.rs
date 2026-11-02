@@ -141,23 +141,42 @@ pub struct UnknownVendorRequest(pub u8);
 mod tests {
     use super::*;
 
+    const ALL: [VendorRequest; 9] = [
+        VendorRequest::ModuleEnable,
+        VendorRequest::ModuleDisable,
+        VendorRequest::ClearAis31StartupTestsRequestFlag,
+        VendorRequest::GetAis31StartupTestsRequestFlag,
+        VendorRequest::GetBoardVersion,
+        VendorRequest::GetModulesMask,
+        VendorRequest::GetModulesPower,
+        VendorRequest::GetModulesRate,
+        VendorRequest::GetModulesStatus,
+    ];
+
     #[test]
-    fn request_types_match_libusb_flags() {
+    fn test_request_types_match_libusb_flags() {
         // LIBUSB_REQUEST_TYPE_VENDOR | LIBUSB_RECIPIENT_INTERFACE | LIBUSB_ENDPOINT_IN/OUT
         assert_eq!(REQUEST_TYPE_VENDOR_IN, 0x40 | 0x01 | 0x80);
         assert_eq!(REQUEST_TYPE_VENDOR_OUT, 0x40 | 0x01);
     }
 
     #[test]
-    fn bulk_endpoint_is_in_endpoint_6() {
+    fn test_bulk_endpoint_is_in_endpoint_6() {
         assert_eq!(ENDPOINT_BULK_IN & 0x80, 0x80);
         assert_eq!(ENDPOINT_BULK_IN & 0x0F, 6);
     }
 
     #[test]
-    fn commands_without_payload_are_out_requests() {
+    fn test_commands_without_payload_are_out_requests() {
         assert_eq!(VendorRequest::ModuleEnable.request_type(), 0x41);
         assert_eq!(VendorRequest::GetModulesStatus.request_type(), 0xC1);
         assert_eq!(VendorRequest::GetBoardVersion as u8, 0x10);
+    }
+
+    #[test]
+    fn test_vendor_request_conversion() {
+        for v in ALL {
+            assert_eq!(VendorRequest::try_from(v as u8), Ok(v));
+        }
     }
 }

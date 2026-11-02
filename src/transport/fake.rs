@@ -9,6 +9,7 @@ use crate::{
 pub struct FakeUsbQuantis {
     state: QuantisState,
     max_packet_size: usize,
+    counter: u8,
 }
 
 #[derive(Debug)]
@@ -39,6 +40,7 @@ impl Default for FakeUsbQuantis {
         Self {
             state: QuantisState::default(),
             max_packet_size: MAX_BULK_PACKET_SIZE,
+            counter: 0,
         }
     }
 }
@@ -95,12 +97,22 @@ impl UsbTransport for FakeUsbQuantis {
 
     // device -> host
     fn bulk_in(&mut self, buf: &mut [u8]) -> Result<usize, TransportError> {
-        todo!()
+        // the buffer size  must be = n*max_size
+        if buf.is_empty() || buf.len() % self.max_packet_size != 0 {
+            return Err(TransportError::InvalidArgument);
+        }
+
+        for b in buf.iter_mut() {
+            *b = self.counter;
+            self.counter = self.counter.wrapping_add(1);
+        }
+
+        Ok(buf.len())
     }
 
     // device -> host
     fn max_packet_size(&self) -> usize {
-        todo!()
+        self.max_packet_size
     }
 }
 
@@ -111,6 +123,7 @@ impl FakeUsbQuantis {
         FakeUsbQuantis {
             state: QuantisState::default(),
             max_packet_size,
+            counter: 0,
         }
     }
 }
@@ -118,9 +131,18 @@ impl FakeUsbQuantis {
 #[cfg(test)]
 mod tests {
     use crate::{
-        transport::{UsbTransport, fake::FakeUsbQuantis},
-        usb::VendorRequest,
+        transport::{TransportError, UsbTransport, fake::FakeUsbQuantis},
+        usb::{MAX_BULK_PACKET_SIZE, VendorRequest},
     };
+
+    #[test]
+    fn test_control_unknown_command() {
+        let mut buf = [0u8; 10];
+        let mut fake_quantis = FakeUsbQuantis::default();
+
+        let res = fake_quantis.control_in(0x99, &mut buf);
+        assert!(matches!(res, Err(TransportError::Stall)));
+    }
 
     #[test]
     fn test_control_in_with_longer_buffer() {
@@ -129,6 +151,12 @@ mod tests {
 
         let res = fake_quantis
             .control_in(VendorRequest::GetBoardVersion as u8, &mut buf)
+            .unwrap();
+
+        assert_eq!(res, 4);
+
+        let res = fake_quantis
+            .control_in(VendorRequest::GetModulesRate as u8, &mut buf)
             .unwrap();
 
         assert_eq!(res, 4);
@@ -141,6 +169,12 @@ mod tests {
 
         let res = fake_quantis
             .control_in(VendorRequest::GetBoardVersion as u8, &mut buf)
+            .unwrap();
+
+        assert_eq!(res, 2);
+
+        let res = fake_quantis
+            .control_in(VendorRequest::GetModulesRate as u8, &mut buf)
             .unwrap();
 
         assert_eq!(res, 2);
@@ -181,5 +215,99 @@ mod tests {
             .unwrap();
         assert_eq!(res, 1);
         assert_eq!(buf[0], 1u8);
+    }
+
+    #[test]
+    fn test_wrong_buffer_size_with_lowest_packet_size() {
+        let mut fake_quantis = FakeUsbQuantis::new(64);
+
+        // buf size 0
+        let mut buf = [0u8; 0];
+        let res = fake_quantis.bulk_in(&mut buf);
+        assert!(matches!(res, Err(TransportError::InvalidArgument)));
+
+        // buf size 32 (which is not = n * max_size) -> n must be int
+        let mut buf = [0u8; 32];
+        let res = fake_quantis.bulk_in(&mut buf);
+        assert!(matches!(res, Err(TransportError::InvalidArgument)));
+
+        // buf size 100
+        let mut buf = [0u8; 100];
+        let res = fake_quantis.bulk_in(&mut buf);
+        assert!(matches!(res, Err(TransportError::InvalidArgument)));
+    }
+
+    #[test]
+    fn test_good_buffer_size_with_lowest_packet_size() {
+        let mut fake_quantis = FakeUsbQuantis::new(64);
+
+        let mut buf = [0u8; 128];
+        let res = fake_quantis.bulk_in(&mut buf).unwrap();
+
+        assert_eq!(res, 128);
+
+        for (count, i) in buf.iter().enumerate() {
+            assert_eq!(*i as usize, count);
+        }
+    }
+
+    #[test]
+    fn test_good_buffer_size_with_lowest_packet_size_consecutives() {
+        let mut fake_quantis = FakeUsbQuantis::new(64);
+
+        let mut buf = [0u8; 128];
+        let res = fake_quantis.bulk_in(&mut buf).unwrap();
+
+        assert_eq!(res, 128);
+        let expected: Vec<u8> = (0..128).collect();
+        assert_eq!(buf.as_slice(), expected.as_slice());
+
+        let mut buf = [0u8; 128];
+        let res = fake_quantis.bulk_in(&mut buf).unwrap();
+
+        assert_eq!(res, 128);
+        let expected: Vec<u8> = (128..=255).collect();
+        assert_eq!(buf.as_slice(), expected.as_slice());
+    }
+
+    #[test]
+    fn test_good_buffer_size_with_lowest_packet_size_max_read() {
+        let mut fake_quantis = FakeUsbQuantis::new(64);
+
+        let mut buf = [0u8; 512];
+        let res = fake_quantis.bulk_in(&mut buf).unwrap();
+
+        assert_eq!(res, 512);
+        let expected: Vec<u8> = (0..=255).collect();
+        let expected = expected
+            .into_iter()
+            .chain((0..=255).collect::<Vec<u8>>())
+            .collect::<Vec<u8>>();
+        assert_eq!(buf.as_slice(), expected.as_slice());
+
+        let mut buf = [0u8; 64];
+        let res = fake_quantis.bulk_in(&mut buf).unwrap();
+
+        assert_eq!(res, 64);
+        let expected: Vec<u8> = (0..64).collect();
+        assert_eq!(buf.as_slice(), expected.as_slice());
+    }
+
+    #[test]
+    fn test_good_buffer_size_with_max_size() {
+        let mut fake_quantis = FakeUsbQuantis::new(MAX_BULK_PACKET_SIZE);
+
+        let mut buf = [0u8; 1024];
+        let res = fake_quantis.bulk_in(&mut buf).unwrap();
+
+        assert_eq!(res, 1024);
+        let expected: Vec<u8> = (0..=255).collect();
+        let expected = expected
+            .into_iter()
+            .chain((0..=255).collect::<Vec<u8>>())
+            .chain((0..=255).collect::<Vec<u8>>())
+            .chain((0..=255).collect::<Vec<u8>>())
+            .collect::<Vec<u8>>();
+        assert_eq!(buf.as_slice(), expected.as_slice());
     }
 }
