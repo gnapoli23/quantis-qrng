@@ -36,6 +36,9 @@ pub const INTERFACE: u8 = 0;
 /// The device has a single data endpoint, in direction IN (device to host).
 pub const ENDPOINT_BULK_IN: u8 = 0x86;
 
+/// Maximum size in bytes of a bulk IN packet
+pub const MAX_BULK_PACKET_SIZE: usize = 512;
+
 /// Timeout used by the original library for every transfer.
 pub const TRANSFER_TIMEOUT: Duration = Duration::from_millis(1000);
 
@@ -109,6 +112,30 @@ impl VendorRequest {
         }
     }
 }
+
+impl TryFrom<u8> for VendorRequest {
+    type Error = UnknownVendorRequest;
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        match value {
+            0x10 => Ok(VendorRequest::GetBoardVersion),
+            0x11 => Ok(VendorRequest::ModuleDisable),
+            0x12 => Ok(VendorRequest::ModuleEnable),
+            0x13 => Ok(VendorRequest::GetModulesStatus),
+            0x14 => Ok(VendorRequest::GetModulesPower),
+            0x15 => Ok(VendorRequest::GetModulesMask),
+            0x16 => Ok(VendorRequest::GetModulesRate),
+            0x17 => Ok(VendorRequest::GetAis31StartupTestsRequestFlag),
+            0x18 => Ok(VendorRequest::ClearAis31StartupTestsRequestFlag),
+            _ => Err(UnknownVendorRequest(value)),
+        }
+    }
+}
+
+/// Error for unknown vendor requests
+#[derive(Debug, thiserror::Error, Clone, Copy, PartialEq, Eq)]
+#[error("unknown vendor request: {0:#04x}")]
+pub struct UnknownVendorRequest(pub u8);
 
 #[cfg(test)]
 mod tests {

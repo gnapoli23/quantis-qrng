@@ -58,6 +58,9 @@ pub trait UsbTransport {
     fn max_packet_size(&self) -> usize;
 }
 
+#[cfg(test)]
+mod fake;
+
 /// Error returned by a [`UsbTransport`] operation.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
