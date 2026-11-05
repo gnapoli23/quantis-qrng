@@ -12,8 +12,14 @@ categories = ["hardware-support", "cryptography"]
 authors = ["Giovanni Napoli"]
 include = ["/src", "/README.md", "/LICENSE-MIT", "/LICENSE-APACHE", "/NOTICE"]
 
+[[bin]]
+name = "qrng"
+path = "src/main.rs"
+
 [dependencies]
 thiserror = "2"
+nusb = "0.2"
+clap = { version = "4", features = ["derive"] }
 
 [lints.rust]
 unsafe_code = "forbid"

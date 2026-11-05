@@ -13,6 +13,7 @@
 //! (`QuantisUsb_Commands.h` and `QuantisUsb_Unix.c`).
 
 use core::time::Duration;
+use std::fmt;
 
 /// USB vendor ID of the device.
 ///
@@ -85,6 +86,32 @@ pub enum VendorRequest {
     GetAis31StartupTestsRequestFlag = 0x17,
     /// Clear the AIS 31 start-up tests request flag (no data).
     ClearAis31StartupTestsRequestFlag = 0x18,
+}
+
+impl fmt::Display for VendorRequest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            VendorRequest::GetBoardVersion => write!(f, "GetBoardVersion ({0:#04x})", *self as u8),
+            VendorRequest::ModuleDisable => write!(f, "ModuleDisable ({0:#04x})", *self as u8),
+            VendorRequest::ModuleEnable => write!(f, "ModuleEnable ({0:#04x})", *self as u8),
+            VendorRequest::GetModulesStatus => {
+                write!(f, "GetModulesStatus ({0:#04x})", *self as u8)
+            }
+            VendorRequest::GetModulesPower => write!(f, "GetModulesPower ({0:#04x})", *self as u8),
+            VendorRequest::GetModulesMask => write!(f, "GetModulesMask ({0:#04x})", *self as u8),
+            VendorRequest::GetModulesRate => write!(f, "GetModulesRate ({0:#04x})", *self as u8),
+            VendorRequest::GetAis31StartupTestsRequestFlag => {
+                write!(f, "GetAis31StartupTestsRequestFlag ({0:#04x})", *self as u8)
+            }
+            VendorRequest::ClearAis31StartupTestsRequestFlag => {
+                write!(
+                    f,
+                    "ClearAis31StartupTestsRequestFlag ({0:#04x})",
+                    *self as u8
+                )
+            }
+        }
+    }
 }
 
 impl VendorRequest {

@@ -59,7 +59,10 @@ pub trait UsbTransport {
 }
 
 #[cfg(test)]
-mod fake;
+pub mod fake;
+
+mod nusb_t;
+pub use nusb_t::NusbTransport;
 
 /// Error returned by a [`UsbTransport`] operation.
 #[derive(Debug, thiserror::Error)]
