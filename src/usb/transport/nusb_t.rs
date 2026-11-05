@@ -1,3 +1,5 @@
+//! [`UsbTransport`] backed by the [`nusb`] crate.
+
 use nusb::{
     Endpoint, Interface, MaybeFuture as _, list_devices,
     transfer::{Buffer, Bulk, ControlIn, ControlOut, ControlType, In, Recipient},
@@ -25,7 +27,11 @@ impl From<nusb::transfer::TransferError> for TransportError {
     }
 }
 
-/// ADD DOC HERE
+/// A [`UsbTransport`] backed by the [`nusb`] crate: the transport used by
+/// the real device.
+///
+/// It owns the claimed interface and the bulk IN endpoint, so the device stays
+/// open, and unavailable to other processes, until the value is dropped.
 #[derive(Debug)]
 pub struct NusbTransport {
     interface: Interface,         // control_in and control_out
@@ -35,10 +41,22 @@ pub struct NusbTransport {
 }
 
 impl NusbTransport {
-    /// ADD DOC HERE
+    /// Finds the Quantis USB device, opens it, selects its configuration and
+    /// claims its interface, like the original library.
+    ///
+    /// The serial number and the manufacturer are read here, from what the
+    /// operating system cached at enumeration: no request is sent for them.
     ///
     /// # Errors
-    /// ADD DOC HERE
+    ///
+    /// * [`Error::NoDevice`] if no Quantis USB is attached.
+    /// * [`Error::TooManyDevices`] if more than one is attached.
+    /// * [`Error::PermissionDenied`] if the user cannot open the device (on
+    ///   Linux, a udev rule is needed for non-root users).
+    /// * [`Error::Busy`] if another process already holds the interface.
+    /// * [`Error::UnexpectedDescriptor`] or [`Error::NoConfiguration`] if the
+    ///   device does not look like a Quantis USB.
+    /// * Any other error reported by the USB stack.
     pub fn open() -> Result<Self, Error> {
         // get devices
         let mut devices_info = list_devices()
@@ -57,7 +75,7 @@ impl NusbTransport {
         }
 
         // device info
-        let dev_info = devices_info.remove(0); // safe
+        let dev_info = devices_info.remove(0); // exactly one element, checked above
 
         // open device
         let device = dev_info.open().wait()?;
@@ -109,15 +127,14 @@ impl UsbTransport for NusbTransport {
         request: u8,
         buf: &mut [u8],
     ) -> Result<usize, transport::TransportError> {
-        #[allow(clippy::cast_possible_truncation)]
-        let w_length = buf.len().min(u16::MAX as usize) as u16; // take u16 as the max
+        let w_length = u16::try_from(buf.len()).map_err(|_| TransportError::InvalidArgument)?;
         let control_in = ControlIn {
             control_type: ControlType::Vendor,
             recipient: Recipient::Interface,
             request,
-            value: 0,         // wValue -> 0 for custom vendor request
-            index: 0,         // wIndex -> 0 for custom vendor request
-            length: w_length, // wLength
+            value: 0,                    // wValue: unused by the vendor requests
+            index: u16::from(INTERFACE), // wIndex: interface number (recipient = interface)
+            length: w_length,            // wLength
         };
         let data = self
             .interface
@@ -133,11 +150,11 @@ impl UsbTransport for NusbTransport {
     fn control_out(&mut self, request: u8) -> Result<(), transport::TransportError> {
         let control_out = ControlOut {
             control_type: ControlType::Vendor,
-            recipient: Recipient::Interface, // control, so `interface`
+            recipient: Recipient::Interface,
             request,
-            value: 0,  // wValue -> 0 for custom vendor request
-            index: 0,  // wIndex -> 0 for custom vendor request
-            data: &[], // wLength -> no data
+            value: 0,                    // wValue: unused by the vendor requests
+            index: u16::from(INTERFACE), // wIndex: interface number (recipient = interface)
+            data: &[],                   // wLength = 0: no data stage
         };
         self.interface
             .control_out(control_out, TRANSFER_TIMEOUT)
@@ -147,7 +164,7 @@ impl UsbTransport for NusbTransport {
     }
 
     fn bulk_in(&mut self, buf: &mut [u8]) -> Result<usize, transport::TransportError> {
-        // the buffer size  must be = n*max_size
+        // the device only accepts requests for whole packets
         if buf.is_empty() || buf.len() % self.max_packet_size() != 0 {
             return Err(TransportError::InvalidArgument);
         }
@@ -155,28 +172,12 @@ impl UsbTransport for NusbTransport {
         let buffer = Buffer::new(buf.len());
         let compl = self.endpoint.transfer_blocking(buffer, TRANSFER_TIMEOUT);
 
-        if compl.status.is_ok() {
-            let res = compl.into_result().unwrap(); // safe
+        let res = compl.into_result()?;
+        let n = res.len();
+        // a short packet ends the transfer early: only buf[..n] is filled
+        buf[..n].copy_from_slice(&res);
 
-            // partial completion?
-            let n = res.len();
-            if res.requested_len() > n {
-                return Err(TransportError::InvalidArgument);
-            }
-
-            // return data
-            buf[..n].copy_from_slice(&res);
-
-            Ok(n)
-        } else {
-            // partial completion and timeout
-            if compl.actual_len != 0 {
-                return Err(TransportError::Timeout);
-            }
-            let res = compl.into_result().unwrap_err();
-
-            Err(TransportError::from(res))
-        }
+        Ok(n)
     }
 
     fn max_packet_size(&self) -> usize {

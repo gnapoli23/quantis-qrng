@@ -5,7 +5,7 @@ use crate::{
     usb::transport::{TransportError, UsbTransport},
 };
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug)]
 pub(crate) struct FakeUsbTransport {
     pub(crate) state: QuantisState,
     max_packet_size: usize,
@@ -13,7 +13,7 @@ pub(crate) struct FakeUsbTransport {
     limit: Option<usize>,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug)]
 pub(crate) struct QuantisState {
     pub(crate) status: u8,
     pub(crate) power: u8,
@@ -72,10 +72,8 @@ impl UsbTransport for FakeUsbTransport {
         };
 
         let mut n = buf.len().min(vendor_request.response_len());
-        if let Some(limit) = self.limit
-            && limit < n
-        {
-            n = limit;
+        if let Some(limit) = self.limit {
+            n = n.min(limit);
         }
         buf[..n].copy_from_slice(&data[..n]);
 
@@ -124,18 +122,16 @@ impl UsbTransport for FakeUsbTransport {
 }
 
 impl FakeUsbTransport {
-    pub fn new(max_packet_size: Option<usize>, limit: Option<usize>) -> Self {
-        if let Some(max_packet_size) = max_packet_size {
-            assert!(max_packet_size == 64 || max_packet_size == MAX_BULK_PACKET_SIZE);
-        }
-        let max_packet_size = max_packet_size.unwrap_or(MAX_BULK_PACKET_SIZE);
+    pub fn with_max_packet_size(mut self, max_packet_size: usize) -> Self {
+        assert!(max_packet_size == 64 || max_packet_size == MAX_BULK_PACKET_SIZE);
 
-        FakeUsbTransport {
-            state: QuantisState::default(),
-            max_packet_size,
-            counter: 0,
-            limit,
-        }
+        self.max_packet_size = max_packet_size;
+        self
+    }
+
+    pub fn with_control_in_limit(mut self, limit: usize) -> Self {
+        self.limit = Some(limit);
+        self
     }
 }
 
@@ -230,7 +226,7 @@ mod tests {
 
     #[test]
     fn test_wrong_buffer_size_with_lowest_packet_size() {
-        let mut fake_quantis = FakeUsbTransport::new(Some(64), None);
+        let mut fake_quantis = FakeUsbTransport::default().with_max_packet_size(64);
 
         // buf size 0
         let mut buf = [0u8; 0];
@@ -250,7 +246,7 @@ mod tests {
 
     #[test]
     fn test_good_buffer_size_with_lowest_packet_size() {
-        let mut fake_quantis = FakeUsbTransport::new(Some(64), None);
+        let mut fake_quantis = FakeUsbTransport::default().with_max_packet_size(64);
 
         let mut buf = [0u8; 128];
         let res = fake_quantis.bulk_in(&mut buf).unwrap();
@@ -264,7 +260,7 @@ mod tests {
 
     #[test]
     fn test_good_buffer_size_with_lowest_packet_size_consecutives() {
-        let mut fake_quantis = FakeUsbTransport::new(Some(64), None);
+        let mut fake_quantis = FakeUsbTransport::default().with_max_packet_size(64);
 
         let mut buf = [0u8; 128];
         let res = fake_quantis.bulk_in(&mut buf).unwrap();
@@ -283,7 +279,7 @@ mod tests {
 
     #[test]
     fn test_good_buffer_size_with_lowest_packet_size_max_read() {
-        let mut fake_quantis = FakeUsbTransport::new(Some(64), None);
+        let mut fake_quantis = FakeUsbTransport::default().with_max_packet_size(64);
 
         let mut buf = [0u8; 512];
         let res = fake_quantis.bulk_in(&mut buf).unwrap();
@@ -306,7 +302,8 @@ mod tests {
 
     #[test]
     fn test_good_buffer_size_with_max_size() {
-        let mut fake_quantis = FakeUsbTransport::new(Some(MAX_BULK_PACKET_SIZE), None);
+        let mut fake_quantis =
+            FakeUsbTransport::default().with_max_packet_size(MAX_BULK_PACKET_SIZE);
 
         let mut buf = [0u8; 1024];
         let res = fake_quantis.bulk_in(&mut buf).unwrap();

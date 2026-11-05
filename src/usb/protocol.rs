@@ -33,11 +33,13 @@ pub const INTERFACE: u8 = 0;
 /// Address of the bulk endpoint that streams random data.
 ///
 /// Bit 7 set means direction IN (device to host), bits 0..=3 are the endpoint
-/// number, so this is IN endpoint 6.
-/// The device has a single data endpoint, in direction IN (device to host).
+/// number, so this is IN endpoint 6. It is the only data endpoint of the
+/// device.
 pub const ENDPOINT_BULK_IN: u8 = 0x86;
 
-/// Maximum size in bytes of a bulk IN packet
+/// Largest bulk packet size, in bytes: the one of a high-speed (USB 2.0)
+/// link, used by the device in practice. On a full-speed (USB 1.1) link the
+/// packets are 64 bytes.
 pub const MAX_BULK_PACKET_SIZE: usize = 512;
 
 /// Timeout used by the original library for every transfer.
@@ -47,7 +49,7 @@ pub const TRANSFER_TIMEOUT: Duration = Duration::from_millis(1000);
 //
 // | bit  | field     | values used here                        |
 // |------|-----------|-----------------------------------------|
-// | 7    | direction | 0 = host -> device, 1 = device -> host    |
+// | 7    | direction | 0 = host -> device, 1 = device -> host  |
 // | 6..5 | type      | 0 = standard, 1 = class, 2 = vendor     |
 // | 4..0 | recipient | 0 = device, 1 = interface, 2 = endpoint |
 const DIRECTION_IN: u8 = 1 << 7;

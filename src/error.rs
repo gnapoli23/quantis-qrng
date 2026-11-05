@@ -1,15 +1,13 @@
+//! The error type of the crate.
+
 use crate::usb::{protocol::VendorRequest, transport::TransportError};
 
-/// Error for communicating with a USB Quantis device.
+/// Error returned by the operations of this crate.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    /// Transport error
+    /// A USB transfer failed. See [`TransportError`] for the reason.
     #[error(transparent)]
     Transport(#[from] TransportError),
-
-    /// Input/output error
-    #[error("io error")]
-    Io,
 
     /// The device answered a vendor request with a response of the wrong
     /// length.
@@ -27,36 +25,41 @@ pub enum Error {
     #[error("device disconnected")]
     Disconnected,
 
-    /// Permission denied
-    #[error("unable to execute the operation: permission denied")]
+    /// The user is not allowed to open the device.
+    ///
+    /// On Linux, non-root users need a udev rule that grants access to the
+    /// device node.
+    #[error("permission denied while opening the device")]
     PermissionDenied,
 
-    /// Device is busy
-    #[error("device is busy")]
+    /// The device is already in use, usually by another process.
+    #[error("device is busy (already in use by another process?)")]
     Busy,
 
-    /// Invalid argument
-    #[error("invalid argument")]
-    InvalidArgument,
+    /// The module mask does not select the module of the device (bit 0).
+    #[error("invalid module mask: {0:#04x}")]
+    InvalidModuleMask(u8),
 
-    /// No device found.
-    #[error("no device found")]
+    /// No Quantis device is attached.
+    #[error("no Quantis device found")]
     NoDevice,
 
-    /// Too many devices connected
-    #[error("too many devices")]
+    /// More than one Quantis device is attached, and the operation needs
+    /// exactly one.
+    #[error("more than one Quantis device found")]
     TooManyDevices,
 
-    /// No configuration present on device
-    #[error("no configuration present on device")]
+    /// The device has no active configuration.
+    #[error("no active configuration on the device")]
     NoConfiguration,
 
-    /// Unexpected descriptor
-    #[error("unexpected descriptor")]
+    /// The device descriptors do not match a Quantis USB (number of
+    /// configurations or interfaces).
+    #[error("unexpected USB descriptors: not a Quantis USB?")]
     UnexpectedDescriptor,
 
-    /// Any other failure reported by the USB stack.
-    #[error("USB transfer failed")]
+    /// Any other failure reported by the USB stack while opening the device.
+    #[error("USB operation failed")]
     Other(#[source] Box<dyn std::error::Error + Send + Sync>),
 }
 

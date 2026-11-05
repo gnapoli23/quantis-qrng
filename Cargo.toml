@@ -15,11 +15,16 @@ include = ["/src", "/README.md", "/LICENSE-MIT", "/LICENSE-APACHE", "/NOTICE"]
 [[bin]]
 name = "qrng"
 path = "src/main.rs"
+required-features = ["cli"]
 
 [dependencies]
 thiserror = "2"
 nusb = "0.2"
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive"], optional = true }
+
+[features]
+default = []
+cli = ["dep:clap"]
 
 [lints.rust]
 unsafe_code = "forbid"
