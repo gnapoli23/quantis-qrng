@@ -38,6 +38,8 @@ fn open_error(value: nusb::Error) -> Error {
         nusb::ErrorKind::Busy => Error::Busy,
         nusb::ErrorKind::PermissionDenied => Error::PermissionDenied,
         nusb::ErrorKind::NotFound => Error::NoDevice,
+        // on Windows -> the device does not use the WinUSB driver
+        nusb::ErrorKind::Unsupported => Error::Unsupported(Box::new(value)),
         // `ErrorKind` is non exhaustive, new kinds end up here
         _ => Error::Other(Box::new(value)),
     }
@@ -90,6 +92,10 @@ impl NusbTransport {
         if device.configurations().count() != 1 {
             return Err(Error::UnexpectedDescriptor);
         }
+
+        // WinUSB can't set the configuration (nusb always returns an error),
+        // Windows already selects it when the driver is loaded
+        #[cfg(not(target_os = "windows"))]
         device
             .set_configuration(CONFIGURATION)
             .wait()
@@ -98,7 +104,9 @@ impl NusbTransport {
         let configuration = device
             .active_configuration()
             .map_err(|_| Error::NoConfiguration)?;
-        if configuration.num_interfaces() != 1 {
+        if configuration.configuration_value() != CONFIGURATION
+            || configuration.num_interfaces() != 1
+        {
             return Err(Error::UnexpectedDescriptor);
         }
 

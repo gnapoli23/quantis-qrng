@@ -34,6 +34,12 @@
 //!
 //! Only one process at a time can open a device.
 //!
+//! # Platforms
+//!
+//! Linux is supported and tested. macOS should work but it is not tested
+//! yet. Windows is not tested yet, and the device must use the WinUSB driver
+//! (the crate can't use the ID Quantique driver).
+//!
 //! # Command-line tool
 //!
 //! The `qrng` tool is built with the `cli` feature:

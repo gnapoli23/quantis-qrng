@@ -3,7 +3,7 @@
 //! * `list` prints the attached Quantis USB devices, without opening them.
 //! * `probe` prints info and registers of a device. It only reads, nothing is
 //!   changed on the device.
-//! * `read` writes random bytes to stdout, raw or as hex.
+//! * `read` writes random bytes to stdout or to a file, raw or as hex.
 //!
 //! `probe` and `read` open the only attached device, or the one with the
 //! serial number given with `--serial`.
@@ -11,7 +11,9 @@
 use std::{
     error::Error as _,
     fmt,
+    fs::File,
     io::{self, BufWriter, IsTerminal as _, Write},
+    path::PathBuf,
     process::ExitCode,
 };
 
@@ -74,6 +76,12 @@ struct ReadArgs {
     /// Print the bytes as hex, 32 bytes per line.
     #[arg(long)]
     hex: bool,
+
+    /// Write the bytes to FILE instead of stdout. The file is created, or
+    /// overwritten if it exists. On Windows use it instead of `>`, the shell
+    /// can change binary data.
+    #[arg(short, long, value_name = "FILE")]
+    output: Option<PathBuf>,
 }
 
 // bytes read and written at a time, so the memory used is the same for any
@@ -88,6 +96,8 @@ enum CliError {
     Device(Error),
     // can't write the output
     Output(io::Error),
+    // can't create the output file
+    CreateOutput(PathBuf, io::Error),
     // binary output on a terminal
     BinaryToTerminal,
 }
@@ -109,6 +119,9 @@ impl fmt::Display for CliError {
         match self {
             CliError::Device(err) => err.fmt(f),
             CliError::Output(err) => write!(f, "cannot write the output: {err}"),
+            CliError::CreateOutput(path, err) => {
+                write!(f, "cannot create {}: {err}", path.display())
+            }
             CliError::BinaryToTerminal => {
                 write!(f, "refusing to write binary data to a terminal")
             }
@@ -193,14 +206,32 @@ fn probe(args: &DeviceArgs) -> Result<(), CliError> {
 }
 
 fn read(args: &ReadArgs) -> Result<(), CliError> {
-    let stdout = io::stdout();
-    // check it before opening the device
-    if !args.hex && stdout.is_terminal() {
-        return Err(CliError::BinaryToTerminal);
+    // checks on stdout, before opening the device
+    if args.output.is_none() {
+        if !args.hex && io::stdout().is_terminal() {
+            return Err(CliError::BinaryToTerminal);
+        }
+        // on Windows the shell can re-encode binary data (Windows PowerShell
+        // converts it to UTF-16), hex is plain text so it's fine
+        if cfg!(windows) && !args.hex {
+            eprintln!(
+                "qrng: warning: on Windows the shell can change binary data redirected with `>` or `|` \
+                 (Windows PowerShell does), use `-o FILE` to write it safely"
+            );
+        }
     }
 
     let mut quantis = args.device.open()?;
-    let mut out = BufWriter::with_capacity(OUTPUT_CHUNK_SIZE, stdout.lock());
+
+    // the file is created only after the device is open, so an existing file is
+    // not overwritten if the device can't be used
+    let out: Box<dyn Write> = match &args.output {
+        Some(path) => {
+            Box::new(File::create(path).map_err(|err| CliError::CreateOutput(path.clone(), err))?)
+        }
+        None => Box::new(io::stdout().lock()),
+    };
+    let mut out = BufWriter::with_capacity(OUTPUT_CHUNK_SIZE, out);
     let mut buf = vec![0u8; OUTPUT_CHUNK_SIZE];
     let mut remaining = args.size;
 
@@ -225,13 +256,21 @@ fn read(args: &ReadArgs) -> Result<(), CliError> {
     Ok(())
 }
 
+// bytes per line of the hex output
+const HEX_LINE: usize = 32;
+
+// every chunk starts on a new hex line
+const _: () = assert!(OUTPUT_CHUNK_SIZE % HEX_LINE == 0);
+
 // writes `data` as lowercase hex, 32 bytes per line
 fn write_hex(out: &mut impl Write, data: &[u8]) -> io::Result<()> {
-    for line in data.chunks(32) {
-        for byte in line {
-            write!(out, "{byte:02x}")?;
-        }
-        writeln!(out)?;
+    let mut hex = [0u8; HEX_LINE * 2];
+    for line in data.chunks(HEX_LINE) {
+        let hex = &mut hex[..line.len() * 2];
+        // it only fails if the output length is wrong, and here it is right
+        const_hex::encode_to_slice(line, hex).map_err(io::Error::other)?;
+        out.write_all(hex)?;
+        out.write_all(b"\n")?;
     }
     Ok(())
 }
@@ -265,7 +304,7 @@ fn report(err: &CliError) {
 
     let mut source = match err {
         CliError::Device(err) => err.source(),
-        CliError::Output(err) => err.source(),
+        CliError::Output(err) | CliError::CreateOutput(_, err) => err.source(),
         CliError::BinaryToTerminal => None,
     };
     while let Some(cause) = source {
@@ -285,6 +324,9 @@ fn report(err: &CliError) {
         CliError::Device(Error::SerialNotFound(_)) => {
             Some("`qrng list` shows the serial numbers of the attached devices")
         }
+        CliError::Device(Error::Unsupported(_)) if cfg!(windows) => Some(
+            "the device must use the WinUSB driver instead of the ID Quantique one (see the README)",
+        ),
         CliError::Device(Error::ModuleNotReady) => {
             Some("check `Modules status` with `qrng probe`; re-plug the device if it stays 0")
         }
@@ -298,7 +340,9 @@ fn report(err: &CliError) {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_size, write_hex};
+    use std::fmt::Write as _;
+
+    use super::{HEX_LINE, parse_size, write_hex};
 
     #[test]
     fn test_parse_size() {
@@ -330,7 +374,7 @@ mod tests {
         let text = String::from_utf8(out).unwrap();
         let lines: Vec<&str> = text.lines().collect();
         assert_eq!(lines.len(), 2);
-        assert_eq!(lines[0].len(), 64);
+        assert_eq!(lines[0].len(), HEX_LINE * 2);
         assert!(lines[0].starts_with("000102"));
         assert_eq!(lines[1], "2021222324252627");
         assert!(text.ends_with('\n'));
@@ -338,5 +382,22 @@ mod tests {
         let mut out = Vec::new();
         write_hex(&mut out, &[]).unwrap();
         assert_eq!(out, Vec::<u8>::new());
+    }
+
+    #[test]
+    fn test_write_hex_all_bytes() {
+        // same output as `format!("{:02x}")` for every byte value
+        let data: Vec<u8> = (0..=255).collect();
+        let mut expected = String::new();
+        for line in data.chunks(HEX_LINE) {
+            for b in line {
+                write!(expected, "{b:02x}").unwrap();
+            }
+            expected.push('\n');
+        }
+
+        let mut out = Vec::new();
+        write_hex(&mut out, &data).unwrap();
+        assert_eq!(String::from_utf8(out).unwrap(), expected);
     }
 }

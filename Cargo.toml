@@ -27,10 +27,11 @@ targets = ["x86_64-unknown-linux-gnu"]
 thiserror = "2"
 nusb = "0.2"
 clap = { version = "4", features = ["derive"], optional = true }
+const-hex = { version = "1.19", optional = true }
 
 [features]
 default = []
-cli = ["dep:clap"]
+cli = ["dep:clap", "dep:const-hex"]
 
 [lints.rust]
 unsafe_code = "forbid"

@@ -88,7 +88,8 @@ impl QuantisUsb {
     /// instead.
     ///
     /// Like the original library, it selects configuration 1 and claims
-    /// interface 0.
+    /// interface 0. On Windows the configuration is selected by the system,
+    /// and the device must use the WinUSB driver.
     ///
     /// # Errors
     ///
@@ -98,6 +99,8 @@ impl QuantisUsb {
     /// * [`Error::Busy`] if the device is already in use.
     /// * [`Error::UnexpectedDescriptor`] or [`Error::NoConfiguration`] if the
     ///   device does not look like a Quantis USB.
+    /// * [`Error::Unsupported`] on Windows if the device does not use the
+    ///   WinUSB driver.
     /// * [`Error::Other`] for any other USB error.
     pub fn open() -> Result<Self, Error> {
         Self::open_nusb(None)

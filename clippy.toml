@@ -1,0 +1,2 @@
+# words that are not code in the docs (".." keeps the default list)
+doc-valid-idents = ["WinUSB", "PCIe", ".."]

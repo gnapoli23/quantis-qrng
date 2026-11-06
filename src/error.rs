@@ -85,6 +85,13 @@ pub enum Error {
     #[error("unexpected USB descriptors: not a Quantis USB?")]
     UnexpectedDescriptor,
 
+    /// The operating system can't do the operation on this device.
+    ///
+    /// On Windows it means that the device does not use the WinUSB driver,
+    /// e.g. because the ID Quantique driver is installed.
+    #[error("operation not supported by the device driver")]
+    Unsupported(#[source] Box<dyn std::error::Error + Send + Sync>),
+
     /// Any other error of the USB stack while opening the device.
     #[error("USB operation failed")]
     Other(#[source] Box<dyn std::error::Error + Send + Sync>),

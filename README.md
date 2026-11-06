@@ -33,7 +33,21 @@ cargo install quantis-qrng --features cli
 cargo install --git https://github.com/gnapoli23/quantis-qrng --features cli
 ```
 
-MSRV is Rust 1.85. For now it is tested only on Linux.
+MSRV is Rust 1.85.
+
+### Platforms
+
+| OS      | Status |
+|---------|--------|
+| Linux   | supported and tested |
+| macOS   | should work (no driver needed), not tested yet |
+| Windows | not tested yet, needs the WinUSB driver (see below) |
+
+On Windows the crate can only open the device if it uses the **WinUSB**
+driver, it can't use the ID Quantique driver. The driver can be replaced with
+[Zadig](https://zadig.akeo.ie), but then the ID Quantique software doesn't
+work anymore on that machine. Also, use `qrng read -o FILE` instead of `>`:
+the shell can change binary data (Windows PowerShell does).
 
 ### Device access on Linux
 
@@ -65,6 +79,7 @@ Only one process at a time can use the device. To find who is using it run
 qrng list                          # attached devices and serial numbers
 qrng probe                         # info and registers of the device
 qrng read -n 1M > random.bin       # 1 MiB of random bytes
+qrng read -n 1M -o random.bin      # same, without the shell (better on Windows)
 qrng read -n 64 --hex              # 64 bytes as hex
 qrng read -n 10M | ent             # pipe to another program
 qrng probe --serial 1234567890     # pick a device if more are attached
@@ -73,9 +88,10 @@ qrng probe --serial 1234567890     # pick a device if more are attached
 `-n` defaults to 1024 bytes and accepts the suffixes `K`, `M` and `G` (powers
 of 1024). There is no upper limit, the data is read and written in chunks.
 
-`qrng read` doesn't write binary data to a terminal, use `--hex` or redirect
-the output. If the read fails the output just stops (it is never padded) and
-the exit status is 1.
+`qrng read` doesn't write binary data to a terminal, use `--hex`, `-o FILE` or
+redirect the output. On Windows it prints a warning if binary data goes to
+stdout, because the shell can change it: use `-o FILE`. If the read fails the
+output just stops (it is never padded) and the exit status is 1.
 
 ### Library
 
@@ -155,8 +171,7 @@ order.
   backend). In 0.1 it is internal, so it can change without breaking anything,
   and it can be made public later.
 - **More `qrng` commands**: enable/disable the module, clear the AIS 31 flag.
-- **Other platforms**: test on macOS and Windows (`nusb` supports both, on
-  Windows the device needs the WinUSB driver).
+- **Other platforms**: test on macOS and Windows.
 
 ## Contributing
 
