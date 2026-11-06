@@ -22,6 +22,7 @@ Library:
 
 ```sh
 cargo add quantis-qrng@0.1.0-alpha.1
+cargo add quantis-qrng@0.1.0-alpha.1 --features rand_core   # with `rand` support
 ```
 
 `qrng` command-line tool:
@@ -129,6 +130,31 @@ fn main() -> io::Result<()> {
 `read_exact` works like `fill_bytes`. The errors become `io::Error` with the
 closest `io::ErrorKind`, the original `Error` is inside.
 
+### `rand`
+
+With the `rand_core` feature `QuantisUsb` implements `TryRng`, every call reads
+from the device (good for seeds). `QuantisRng` adds a 16 KiB buffer for many
+small values, every byte is returned once and then cleared:
+
+```rust,no_run
+use quantis_qrng::usb::{QuantisRng, QuantisUsb};
+use rand::{RngExt, SeedableRng, rand_core::UnwrapErr, rngs::StdRng};
+
+fn main() -> Result<(), quantis_qrng::Error> {
+    // seed
+    let mut quantis = QuantisUsb::open()?;
+    let std_rng = StdRng::try_from_rng(&mut quantis)?;
+
+    // many small values, `UnwrapErr` panics on device errors
+    let mut rng = QuantisRng::new(quantis);
+    let dice = UnwrapErr(&mut rng).random_range(1..=6);
+    Ok(())
+}
+```
+
+No `TryCryptoRng`, the raw output can have a small bias: for keys, seed a
+CSPRNG.
+
 ## Differences from the original library
 
 Same behaviour of the ID Quantique C library (release 24.4.2), without its
@@ -149,12 +175,6 @@ bugs. There is no official repository, a copy of the sources is in
 
 After 0.1, in no particular order.
 
-- **`rand` support** with a `rand_core` feature (`rand_core` 0.10, `TryRng`).
-  - A buffered `QuantisRng`, otherwise every `u32` costs a 512 bytes packet.
-    Buffered bytes returned only once, buffer cleared on errors and on drop, no
-    `Clone` or `Copy`.
-  - No `TryCryptoRng` on the raw output, it can have a small bias. Better as
-    seed for a CSPRNG (`ChaCha20Rng::try_from_rng(&mut quantis_rng)`).
 - **Uniform numbers**: integers in a range and floats in `[0, 1)`, also in
   `qrng read` (`--integers --min --max`, `--floats`). The original library gets
   them wrong: scaled integers

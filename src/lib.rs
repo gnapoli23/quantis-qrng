@@ -50,6 +50,11 @@
 //! qrng read -n 1M > random.bin
 //! ```
 //!
+//! # `rand`
+//!
+//! With the `rand_core` feature `QuantisUsb` implements `TryRng` (good for
+//! seeds) and `usb::QuantisRng` adds a buffer for many small values.
+//!
 //! # Original library
 //!
 //! The crate is a port of the Quantis C library of ID Quantique (release
@@ -70,7 +75,7 @@ pub mod usb;
 
 pub use error::Error;
 
-// README examples are compiled as doctests
-#[cfg(doctest)]
+// README examples are compiled as doctests (one needs `rand_core`)
+#[cfg(all(doctest, feature = "rand_core"))]
 #[doc = include_str!("../README.md")]
 struct ReadmeDoctests;

@@ -16,9 +16,13 @@ use crate::{
 
 mod discovery;
 pub mod protocol;
+#[cfg(feature = "rand_core")]
+mod rng;
 pub(crate) mod transport;
 
 pub use discovery::DeviceInfo;
+#[cfg(feature = "rand_core")]
+pub use rng::QuantisRng;
 pub use transport::TransportError;
 
 // max size of a single bulk request, in bytes
