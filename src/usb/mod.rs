@@ -5,6 +5,7 @@
 //! hardware only through a [`UsbTransport`], which by
 //! default is [`NusbTransport`].
 //!
+//! * [`DeviceInfo`]: an attached device, found with [`QuantisUsb::list`].
 //! * [`protocol`]: constants and commands of the USB wire protocol.
 //! * [`transport`]: the boundary between the driver logic and the USB stack.
 
@@ -16,8 +17,11 @@ use crate::{
     },
 };
 
+mod discovery;
 pub mod protocol;
 pub mod transport;
+
+pub use discovery::DeviceInfo;
 
 /// An opened Quantis USB device.
 ///
@@ -368,11 +372,24 @@ fn check_bulk_len(received: usize, requested: usize) -> Result<(), Error> {
 pub const READ_CHUNK_SIZE: usize = 16 * 1024;
 
 impl QuantisUsb<NusbTransport> {
+    /// Lists the Quantis USB devices attached to the system.
+    ///
+    /// The devices are not opened and no request is sent to them, so this
+    /// works while other processes are using them. An empty list is not an
+    /// error.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the USB stack cannot enumerate the devices.
+    pub fn list() -> Result<Vec<DeviceInfo>, Error> {
+        NusbTransport::list()
+    }
+
     /// Opens the Quantis USB device attached to the system.
     ///
-    /// Exactly one device must be attached. The original library can select
-    /// one among several devices by index; this crate does not support that
-    /// yet and refuses to guess.
+    /// Exactly one device must be attached: with more than one this refuses
+    /// to guess and returns [`Error::TooManyDevices`]; use
+    /// [`open_serial`](Self::open_serial) to choose one.
     ///
     /// Only one process at a time can open the device.
     ///
@@ -380,7 +397,22 @@ impl QuantisUsb<NusbTransport> {
     ///
     /// See [`NusbTransport::open`].
     pub fn open() -> Result<Self, Error> {
-        Ok(Self::new(NusbTransport::open()?))
+        Ok(Self::new(NusbTransport::open(None)?))
+    }
+
+    /// Opens the attached Quantis USB device whose serial number is `serial`
+    /// (exact match, see [`DeviceInfo::serial_number`]).
+    ///
+    /// The original library selects a device by its index in the enumeration
+    /// order, which can change when devices are plugged in or out; the
+    /// serial number always designates the same device.
+    ///
+    /// # Errors
+    ///
+    /// * [`Error::SerialNotFound`] if no attached device has this serial.
+    /// * The other errors of [`NusbTransport::open`].
+    pub fn open_serial(serial: &str) -> Result<Self, Error> {
+        Ok(Self::new(NusbTransport::open(Some(serial))?))
     }
 
     /// Serial number of the device, if the operating system provides it.

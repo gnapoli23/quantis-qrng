@@ -8,6 +8,7 @@ use nusb::{
 use crate::{
     error::Error,
     usb::{
+        discovery::{self, DeviceInfo},
         protocol::{self, CONFIGURATION, ENDPOINT_BULK_IN, INTERFACE, TRANSFER_TIMEOUT},
         transport::{self, TransportError, UsbTransport},
     },
@@ -41,8 +42,30 @@ pub struct NusbTransport {
 }
 
 impl NusbTransport {
+    /// Lists the Quantis USB devices attached to the system, without opening
+    /// them.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the USB stack cannot enumerate the devices.
+    pub fn list() -> Result<Vec<DeviceInfo>, Error> {
+        Ok(quantis_devices()?
+            .iter()
+            .map(|d| DeviceInfo {
+                serial_number: d.serial_number().map(String::from),
+                manufacturer: d.manufacturer_string().map(String::from),
+                product: d.product_string().map(String::from),
+                bus_id: d.bus_id().to_string(),
+                device_address: d.device_address(),
+            })
+            .collect())
+    }
+
     /// Finds the Quantis USB device, opens it, selects its configuration and
     /// claims its interface, like the original library.
+    ///
+    /// With `serial == None` exactly one Quantis USB must be attached; with
+    /// `Some(s)` the device with serial number `s` is opened.
     ///
     /// The serial number and the manufacturer are read here, from what the
     /// operating system cached at enumeration: no request is sent for them.
@@ -50,32 +73,18 @@ impl NusbTransport {
     /// # Errors
     ///
     /// * [`Error::NoDevice`] if no Quantis USB is attached.
-    /// * [`Error::TooManyDevices`] if more than one is attached.
+    /// * [`Error::TooManyDevices`] if the choice is ambiguous (more than one
+    ///   device and no serial, or two devices with the same serial).
+    /// * [`Error::SerialNotFound`] if no device has serial number `s`.
     /// * [`Error::PermissionDenied`] if the user cannot open the device (on
     ///   Linux, a udev rule is needed for non-root users).
     /// * [`Error::Busy`] if another process already holds the interface.
     /// * [`Error::UnexpectedDescriptor`] or [`Error::NoConfiguration`] if the
     ///   device does not look like a Quantis USB.
     /// * Any other error reported by the USB stack.
-    pub fn open() -> Result<Self, Error> {
-        // get devices
-        let mut devices_info = list_devices()
-            .wait()?
-            .filter(|d| {
-                d.vendor_id() == protocol::VENDOR_ID && d.product_id() == protocol::PRODUCT_ID
-            })
-            .collect::<Vec<_>>();
-
-        if devices_info.is_empty() {
-            return Err(Error::NoDevice);
-        }
-
-        if devices_info.len() > 1 {
-            return Err(Error::TooManyDevices);
-        }
-
-        // device info
-        let dev_info = devices_info.remove(0); // exactly one element, checked above
+    pub fn open(serial: Option<&str>) -> Result<Self, Error> {
+        let dev_info =
+            discovery::select_device(quantis_devices()?, serial, nusb::DeviceInfo::serial_number)?;
 
         // open device
         let device = dev_info.open().wait()?;
@@ -119,6 +128,14 @@ impl NusbTransport {
     pub fn manufacturer(&self) -> Option<&str> {
         self.manufacturer.as_deref()
     }
+}
+
+/// The attached devices with the Quantis USB vendor and product IDs.
+fn quantis_devices() -> Result<Vec<nusb::DeviceInfo>, Error> {
+    Ok(list_devices()
+        .wait()?
+        .filter(|d| d.vendor_id() == protocol::VENDOR_ID && d.product_id() == protocol::PRODUCT_ID)
+        .collect())
 }
 
 impl UsbTransport for NusbTransport {

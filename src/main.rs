@@ -2,10 +2,14 @@
 //!
 //! Commands:
 //!
+//! * `list`: lists the attached Quantis USB devices, without opening them.
 //! * `probe`: opens the Quantis USB device and prints its identity and the
 //!   value of every register. It only reads: the device state is not changed.
 //! * `read`: reads random bytes from the Quantis USB device and writes them to
 //!   standard output, raw or as hexadecimal text.
+//!
+//! `probe` and `read` open the only attached device, or the one given with
+//! `--serial`.
 
 use std::{
     error::Error as _,
@@ -26,8 +30,14 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// List the attached Quantis USB devices and their serial numbers.
+    ///
+    /// The devices are not opened: this works while another program is using
+    /// them, and shows only what the operating system knows. Use `probe` for
+    /// the registers of a device.
+    List,
     /// Print the identity and the registers of the attached Quantis USB.
-    Probe,
+    Probe(DeviceArgs),
     /// Read random bytes from the attached Quantis USB and write them to
     /// standard output.
     ///
@@ -39,7 +49,27 @@ enum Commands {
 }
 
 #[derive(Args)]
+struct DeviceArgs {
+    /// Serial number of the device to open (see `qrng list`). Required when
+    /// more than one Quantis USB is attached.
+    #[arg(short, long)]
+    serial: Option<String>,
+}
+
+impl DeviceArgs {
+    fn open(&self) -> Result<QuantisUsb, Error> {
+        match &self.serial {
+            Some(serial) => QuantisUsb::open_serial(serial),
+            None => QuantisUsb::open(),
+        }
+    }
+}
+
+#[derive(Args)]
 struct ReadArgs {
+    #[command(flatten)]
+    device: DeviceArgs,
+
     /// Number of bytes to read. Accepts the suffixes K, M and G (powers of
     /// 1024), e.g. 4K or 10M. There is no upper limit: the data is streamed.
     #[arg(short = 'n', long = "size", default_value = "1024", value_parser = parse_size)]
@@ -108,14 +138,39 @@ fn main() -> ExitCode {
 
 fn run(cli: &Cli) -> Result<(), CliError> {
     match &cli.command {
-        Commands::Probe => probe(),
+        Commands::List => list(),
+        Commands::Probe(args) => probe(args),
         Commands::Read(args) => read(args),
     }
 }
 
-fn probe() -> Result<(), CliError> {
+fn list() -> Result<(), CliError> {
+    let devices = QuantisUsb::list()?;
+    if devices.is_empty() {
+        println!("No Quantis USB device found.");
+        return Ok(());
+    }
+
+    for (i, device) in devices.iter().enumerate() {
+        if i > 0 {
+            println!();
+        }
+        println!("Serial: {}", device.serial_number().unwrap_or("N/A"));
+        println!("  Manufacturer: {}", device.manufacturer().unwrap_or("N/A"));
+        println!("  Product: {}", device.product().unwrap_or("N/A"));
+        println!(
+            "  Bus {} Device {:03}",
+            device.bus_id(),
+            device.device_address()
+        );
+    }
+
+    Ok(())
+}
+
+fn probe(args: &DeviceArgs) -> Result<(), CliError> {
     // open device
-    let mut quantis = QuantisUsb::open()?;
+    let mut quantis = args.open()?;
 
     // collect data
     let manufacturer = quantis.manufacturer().unwrap_or("N/A").to_string();
@@ -150,7 +205,7 @@ fn read(args: &ReadArgs) -> Result<(), CliError> {
         return Err(CliError::BinaryToTerminal);
     }
 
-    let mut quantis = QuantisUsb::open()?;
+    let mut quantis = args.device.open()?;
     let mut out = BufWriter::with_capacity(OUTPUT_CHUNK_SIZE, stdout.lock());
     let mut buf = vec![0u8; OUTPUT_CHUNK_SIZE];
     let mut remaining = args.size;
@@ -233,6 +288,12 @@ fn report(err: &CliError) {
         ),
         CliError::Device(Error::Busy) => Some("stop the other program that is using the device"),
         CliError::Device(Error::NoDevice) => Some("check the cable and `lsusb -d 0aba:0102`"),
+        CliError::Device(Error::TooManyDevices) => {
+            Some("choose one with --serial; `qrng list` shows the serial numbers")
+        }
+        CliError::Device(Error::SerialNotFound(_)) => {
+            Some("`qrng list` shows the serial numbers of the attached devices")
+        }
         CliError::Device(Error::ModuleNotReady) => {
             Some("check `Modules status` with `qrng probe`; re-plug the device if it stays 0")
         }

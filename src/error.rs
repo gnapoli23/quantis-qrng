@@ -68,10 +68,15 @@ pub enum Error {
     #[error("no Quantis device found")]
     NoDevice,
 
-    /// More than one Quantis device is attached, and the operation needs
-    /// exactly one.
+    /// The choice of the device is ambiguous: more than one Quantis device
+    /// is attached and no serial number was given, or more than one device
+    /// has the requested serial number.
     #[error("more than one Quantis device found")]
     TooManyDevices,
+
+    /// No attached Quantis device has the requested serial number.
+    #[error("no Quantis device with serial number {0:?}")]
+    SerialNotFound(String),
 
     /// The device has no active configuration.
     #[error("no active configuration on the device")]
