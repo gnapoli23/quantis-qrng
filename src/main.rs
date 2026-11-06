@@ -337,6 +337,6 @@ mod tests {
 
         let mut out = Vec::new();
         write_hex(&mut out, &[]).unwrap();
-        assert!(out.is_empty());
+        assert_eq!(out, Vec::<u8>::new());
     }
 }

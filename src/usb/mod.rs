@@ -600,8 +600,8 @@ mod tests {
     fn test_read_empty_buffer_sends_nothing() {
         let mut quantis = QuantisUsb::with_fake(FakeUsbTransport::default());
         quantis.fill_bytes(&mut []).unwrap();
-        assert!(quantis.fake().bulk_in_requests.is_empty());
-        assert!(quantis.fake().control_in_requests.is_empty());
+        assert_eq!(quantis.fake().bulk_in_requests, Vec::<usize>::new());
+        assert_eq!(quantis.fake().control_in_requests, Vec::<u8>::new());
     }
 
     #[test]
@@ -719,7 +719,7 @@ mod tests {
         let err = quantis.fill_bytes(&mut [0u8; 512]).unwrap_err();
         assert!(matches!(err, Error::ModuleNotReady));
         // no bulk request sent
-        assert!(quantis.fake().bulk_in_requests.is_empty());
+        assert_eq!(quantis.fake().bulk_in_requests, Vec::<usize>::new());
     }
 
     #[test]
@@ -763,7 +763,7 @@ mod tests {
                 received: 0
             }
         ));
-        assert!(quantis.fake().bulk_in_requests.is_empty());
+        assert_eq!(quantis.fake().bulk_in_requests, Vec::<usize>::new());
     }
 
     #[test]
