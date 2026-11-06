@@ -1,13 +1,12 @@
-//! Finding the Quantis USB devices attached to the system.
+//! List and select the attached Quantis USB devices.
 
 use crate::error::Error;
 
-/// A Quantis USB device attached to the system, as seen by the operating
-/// system, without opening it.
+/// A Quantis USB device attached to the system.
 ///
-/// Returned by [`QuantisUsb::list`](crate::usb::QuantisUsb::list). Getting it
-/// sends no request to the device and does not claim it, so it works while
-/// another process is using the device.
+/// It is returned by [`QuantisUsb::list`](crate::usb::QuantisUsb::list). The
+/// information comes from the operating system: the device is not opened, so
+/// it can be in use by another process.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeviceInfo {
     pub(crate) serial_number: Option<String>,
@@ -20,8 +19,8 @@ pub struct DeviceInfo {
 impl DeviceInfo {
     /// Serial number of the device, if the operating system provides it.
     ///
-    /// It identifies the device: use it with
-    /// [`QuantisUsb::open_serial`](crate::usb::QuantisUsb::open_serial).
+    /// Pass it to [`QuantisUsb::open_serial`](crate::usb::QuantisUsb::open_serial)
+    /// to open this device.
     #[must_use]
     pub fn serial_number(&self) -> Option<&str> {
         self.serial_number.as_deref()
@@ -29,7 +28,7 @@ impl DeviceInfo {
 
     /// Manufacturer of the device, if the operating system provides it.
     ///
-    /// Always `None` on Windows, which does not cache this string.
+    /// It is always `None` on Windows.
     #[must_use]
     pub fn manufacturer(&self) -> Option<&str> {
         self.manufacturer.as_deref()
@@ -41,48 +40,38 @@ impl DeviceInfo {
         self.product.as_deref()
     }
 
-    /// Identifier of the bus the device is attached to (on Linux the bus
-    /// number, as in `lsusb`).
+    /// Bus of the device (on Linux the bus number shown by `lsusb`).
     #[must_use]
     pub fn bus_id(&self) -> &str {
         &self.bus_id
     }
 
-    /// Address of the device on its bus (on Linux the device number, as in
-    /// `lsusb`). It changes every time the device is plugged in.
+    /// Address of the device on the bus (on Linux the device number shown by
+    /// `lsusb`).
+    ///
+    /// It changes every time the device is plugged in.
     #[must_use]
     pub fn device_address(&self) -> u8 {
         self.device_address
     }
 }
 
-/// Picks the device to open among `candidates`, all Quantis USB devices.
-///
-/// * `serial == None`: exactly one device must be attached; with more than
-///   one the choice is refused instead of guessed.
-/// * `serial == Some(s)`: exactly one device must have serial number `s`
-///   (exact, case-sensitive match).
-///
-/// The original library selects a device by its index in the enumeration
-/// order instead. That order is not stable (it can change when devices are
-/// plugged in or out), so a serial number is used here. The original
-/// selection also has an off-by-one bug (`QuantisUsbOpen` in
-/// `QuantisUsb_Unix.c`):
-///
-/// ```c
-/// if ((quantisUsbCount == 0) || (quantisUsbCount < deviceHandle->deviceNumber))
-/// ```
-///
-/// accepts `deviceNumber == quantisUsbCount`, one past the last device, and
-/// then reads an uninitialized slot of the `malloc`ed device array. There is
-/// no index here, so that cannot happen.
-///
-/// # Errors
-///
-/// * [`Error::NoDevice`] if `candidates` is empty.
-/// * [`Error::TooManyDevices`] if the choice is ambiguous: more than one
-///   candidate without `serial`, or more than one with serial `s`.
-/// * [`Error::SerialNotFound`] if no candidate has serial `s`.
+// Picks the device to open.
+//
+// Without `serial` there must be exactly one device, if there are more we
+// don't guess. With `serial` exactly one device must have that serial number
+// (exact match).
+//
+// The original library selects the device by index, but the order of the
+// devices can change when one is plugged in or out. Also, the index check in
+// `QuantisUsbOpen` (`QuantisUsb_Unix.c`) is off by one
+// (https://github.com/sanddweller/QRNGPcieDriver/blob/1955b9cce8f0c552c2cee281a9499506100d3170/libs/src/Quantis/QuantisUsb_Unix.c#L439):
+//
+//     if ((quantisUsbCount == 0) || (quantisUsbCount < deviceHandle->deviceNumber))
+//
+// it accepts `deviceNumber == quantisUsbCount`, one past the last device, and
+// then reads an uninitialized element of the array. Here there is no index, so
+// this can't happen.
 pub(crate) fn select_device<T>(
     candidates: Vec<T>,
     serial: Option<&str>,
@@ -103,7 +92,7 @@ pub(crate) fn select_device<T>(
     match (matching.len(), serial) {
         (1, _) => Ok(matching.remove(0)),
         (0, Some(s)) => Err(Error::SerialNotFound(s.to_string())),
-        // `0` without a serial is excluded by the emptiness check above
+        // 0 without serial is not possible, `candidates` is not empty
         _ => Err(Error::TooManyDevices),
     }
 }

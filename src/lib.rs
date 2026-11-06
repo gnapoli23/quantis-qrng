@@ -1,13 +1,12 @@
-//! Unofficial pure-Rust driver for ID Quantique **Quantis** quantum random
-//! number generators.
+//! Unofficial pure-Rust driver for ID Quantique Quantis quantum random number
+//! generators (QRNG).
 //!
-//! > **Status: early development.** The vendor commands of Quantis USB work
-//! > on real hardware; reading random data is implemented but not yet tested
-//! > on a real device. PCIe devices are not supported yet.
+//! The driver runs in user space and talks to the device with [`nusb`], so
+//! there is no C library, `libusb` or kernel module to install.
 //!
-//! The driver runs entirely in user space and talks to the device through
-//! [`nusb`](https://docs.rs/nusb): no C library and no kernel module are
-//! needed.
+//! At the moment only **Quantis USB** is supported, through [`usb::QuantisUsb`].
+//!
+//! # Example
 //!
 //! ```no_run
 //! use quantis_qrng::usb::QuantisUsb;
@@ -18,20 +17,54 @@
 //! println!("data rate: {} bytes/s", quantis.modules_rate()?);
 //!
 //! let mut random = [0u8; 32];
-//! quantis.read(&mut random)?;
+//! quantis.fill_bytes(&mut random)?;
 //! # Ok(())
 //! # }
 //! ```
 //!
-//! On Linux a non-root user needs a udev rule to access the device.
+//! If more than one device is attached, pick one with
+//! [`QuantisUsb::open_serial`](usb::QuantisUsb::open_serial). The serial
+//! numbers are returned by [`QuantisUsb::list`](usb::QuantisUsb::list).
 //!
-//! The `qrng` command-line tool is built with the `cli` feature:
-//! `cargo install quantis-qrng --features cli`.
+//! # Device access
+//!
+//! On Linux only root can open the device by default. The repository ships a
+//! udev rule (`contrib/udev/70-quantis-qrng.rules`) that gives access to the
+//! `plugdev` group and to the user logged in at the machine.
+//!
+//! Only one process at a time can open a device.
+//!
+//! # Command-line tool
+//!
+//! The `qrng` tool is built with the `cli` feature:
+//!
+//! ```sh
+//! cargo install quantis-qrng --features cli
+//! qrng list
+//! qrng read -n 1M > random.bin
+//! ```
+//!
+//! # Original library
+//!
+//! The crate is a port of the Quantis C library of ID Quantique (release
+//! 24.4.2). ID Quantique distributes it as an archive, there is no official
+//! repository, but a copy of the sources is on GitHub:
+//! [`libs/src`](https://github.com/sanddweller/QRNGPcieDriver/tree/1955b9cce8f0c552c2cee281a9499506100d3170/libs/src).
+//! The library is in `Quantis/`, the `EasyQuantis` tool in `EasyQuantis/`.
+//!
+//! # Disclaimer
 //!
 //! This crate is not affiliated with or endorsed by ID Quantique SA.
 //! "Quantis" is a trademark of ID Quantique SA.
+//!
+//! [`nusb`]: https://docs.rs/nusb
 
 mod error;
 pub mod usb;
 
 pub use error::Error;
+
+// README examples are compiled as doctests
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+struct ReadmeDoctests;

@@ -1,51 +1,50 @@
-//! Wire protocol of the **Quantis USB** device.
+//! USB protocol of the Quantis USB.
 //!
-//! Quantis USB has no kernel driver: the operating system only exposes the raw
-//! USB device (on Linux through `usbfs`, `/dev/bus/usb/BBB/DDD`) and the
-//! "driver" is user-space code that talks to it with two kinds of transfers:
+//! Quantis USB has no kernel driver. The operating system only exposes the
+//! raw USB device (on Linux `/dev/bus/usb/BBB/DDD`) and the driver talks to it
+//! from user space with two kinds of transfers:
 //!
-//! * **Control transfers** on endpoint 0, used for commands such as "read the
-//!   module status" or "enable the module". See [`VendorRequest`].
-//! * **Bulk IN transfers** on [`ENDPOINT_BULK_IN`], used to stream random
-//!   bytes from the device to the host.
+//! * control transfers on endpoint 0 for the commands, see [`VendorRequest`];
+//! * bulk IN transfers on [`ENDPOINT_BULK_IN`] for the random data.
 //!
-//! The values in this module come from the original ID Quantique C library
-//! (`QuantisUsb_Commands.h` and `QuantisUsb_Unix.c`).
+//! The values come from the original ID Quantique C library,
+//! [`QuantisUsb_Commands.h`](https://github.com/sanddweller/QRNGPcieDriver/blob/1955b9cce8f0c552c2cee281a9499506100d3170/libs/src/Quantis/QuantisUsb_Commands.h)
+//! and [`QuantisUsb_Unix.c`](https://github.com/sanddweller/QRNGPcieDriver/blob/1955b9cce8f0c552c2cee281a9499506100d3170/libs/src/Quantis/QuantisUsb_Unix.c).
 
 use core::time::Duration;
 use std::fmt;
 
-/// USB vendor ID of the device.
+/// USB vendor ID.
 ///
-/// It belongs to Ellisys, the maker of the USB controller used inside the
-/// Quantis, not to ID Quantique.
+/// It is the ID of Ellisys, the maker of the USB controller inside the
+/// device, not of ID Quantique.
 pub const VENDOR_ID: u16 = 0x0ABA;
 
-/// USB product ID of the Quantis USB.
+/// USB product ID.
 pub const PRODUCT_ID: u16 = 0x0102;
 
-/// The configuration the driver selects (`bConfigurationValue`).
+/// Configuration selected when the device is opened (`bConfigurationValue`).
 pub const CONFIGURATION: u8 = 1;
 
-/// The interface the driver claims (`bInterfaceNumber`).
+/// Interface claimed when the device is opened (`bInterfaceNumber`).
 pub const INTERFACE: u8 = 0;
 
-/// Address of the bulk endpoint that streams random data.
+/// Address of the bulk endpoint of the random data.
 ///
-/// Bit 7 set means direction IN (device to host), bits 0..=3 are the endpoint
-/// number, so this is IN endpoint 6. It is the only data endpoint of the
-/// device.
+/// Bit 7 is the direction (1 = IN, device to host) and bits 0..=3 are the
+/// endpoint number, so it is IN endpoint 6. The device has no other data
+/// endpoint.
 pub const ENDPOINT_BULK_IN: u8 = 0x86;
 
-/// Largest bulk packet size, in bytes: the one of a high-speed (USB 2.0)
-/// link, used by the device in practice. On a full-speed (USB 1.1) link the
-/// packets are 64 bytes.
+/// Max bulk packet size on a high-speed (USB 2.0) port, in bytes.
+///
+/// On a full-speed (USB 1.1) port the packets are 64 bytes.
 pub const MAX_BULK_PACKET_SIZE: usize = 512;
 
-/// Timeout used by the original library for every transfer.
-pub const TRANSFER_TIMEOUT: Duration = Duration::from_millis(1000);
+/// Timeout of every transfer (same as the original library).
+pub(crate) const TRANSFER_TIMEOUT: Duration = Duration::from_millis(1000);
 
-// Fields of `bmRequestType`, the first byte of every control transfer:
+// fields of `bmRequestType`, the first byte of a control transfer
 //
 // | bit  | field     | values used here                        |
 // |------|-----------|-----------------------------------------|
@@ -57,18 +56,20 @@ const DIRECTION_OUT: u8 = 0 << 7;
 const TYPE_VENDOR: u8 = 2 << 5;
 const RECIPIENT_INTERFACE: u8 = 1;
 
-/// `bmRequestType` of a vendor request that reads data from the device
-/// (`0xC1`).
+/// `bmRequestType` of a vendor request that reads data (`0xC1`).
 pub const REQUEST_TYPE_VENDOR_IN: u8 = DIRECTION_IN | TYPE_VENDOR | RECIPIENT_INTERFACE;
 
-/// `bmRequestType` of a vendor request that sends a command with no data
-/// (`0x41`).
+/// `bmRequestType` of a vendor request without data (`0x41`).
 pub const REQUEST_TYPE_VENDOR_OUT: u8 = DIRECTION_OUT | TYPE_VENDOR | RECIPIENT_INTERFACE;
 
-/// Vendor-specific commands, sent as the `bRequest` field of a control
-/// transfer with `wValue = 0` and `wIndex = 0`.
+/// Vendor requests of the device.
+///
+/// They are sent as `bRequest` of a control transfer, with `wValue = 0` and
+/// `wIndex = 0`. The enum is `#[non_exhaustive]`, so new requests can be added
+/// in a minor release.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
+#[non_exhaustive]
 pub enum VendorRequest {
     /// Read the board version (4 bytes, little-endian).
     GetBoardVersion = 0x10,
@@ -76,11 +77,11 @@ pub enum VendorRequest {
     ModuleDisable = 0x11,
     /// Enable the random number module (no data).
     ModuleEnable = 0x12,
-    /// Read the module status (1 byte, non-zero when the module works).
+    /// Read the module status (1 byte, not `0` if the module works).
     GetModulesStatus = 0x13,
     /// Read the module power state (1 byte).
     GetModulesPower = 0x14,
-    /// Read the mask of present modules (1 byte).
+    /// Read the mask of the modules on the board (1 byte).
     GetModulesMask = 0x15,
     /// Read the module data rate in kbit/s (4 bytes, little-endian).
     GetModulesRate = 0x16,
@@ -117,8 +118,9 @@ impl fmt::Display for VendorRequest {
 }
 
 impl VendorRequest {
-    /// Number of bytes the device returns for this request, or `0` for
-    /// commands that only send a request (direction host -> device).
+    /// Length of the response to this request, in bytes.
+    ///
+    /// It is `0` for the commands that send no data back.
     #[must_use]
     pub const fn response_len(self) -> usize {
         match self {
@@ -131,7 +133,7 @@ impl VendorRequest {
         }
     }
 
-    /// The `bmRequestType` to use for this request.
+    /// `bmRequestType` of this request.
     #[must_use]
     pub const fn request_type(self) -> u8 {
         if self.response_len() == 0 {
@@ -161,7 +163,7 @@ impl TryFrom<u8> for VendorRequest {
     }
 }
 
-/// Error for unknown vendor requests
+/// Error of [`VendorRequest::try_from`] for an unknown request code.
 #[derive(Debug, thiserror::Error, Clone, Copy, PartialEq, Eq)]
 #[error("unknown vendor request: {0:#04x}")]
 pub struct UnknownVendorRequest(pub u8);

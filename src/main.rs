@@ -1,15 +1,12 @@
-//! `qrng`: command-line tool for Quantis quantum random number generators.
+//! `qrng`, command-line tool for Quantis quantum random number generators.
 //!
-//! Commands:
+//! * `list` prints the attached Quantis USB devices, without opening them.
+//! * `probe` prints info and registers of a device. It only reads, nothing is
+//!   changed on the device.
+//! * `read` writes random bytes to stdout, raw or as hex.
 //!
-//! * `list`: lists the attached Quantis USB devices, without opening them.
-//! * `probe`: opens the Quantis USB device and prints its identity and the
-//!   value of every register. It only reads: the device state is not changed.
-//! * `read`: reads random bytes from the Quantis USB device and writes them to
-//!   standard output, raw or as hexadecimal text.
-//!
-//! `probe` and `read` open the only attached device, or the one given with
-//! `--serial`.
+//! `probe` and `read` open the only attached device, or the one with the
+//! serial number given with `--serial`.
 
 use std::{
     error::Error as _,
@@ -32,26 +29,25 @@ struct Cli {
 enum Commands {
     /// List the attached Quantis USB devices and their serial numbers.
     ///
-    /// The devices are not opened: this works while another program is using
-    /// them, and shows only what the operating system knows. Use `probe` for
-    /// the registers of a device.
+    /// The devices are not opened, so it works even if another program is
+    /// using them. Use `probe` to read the registers of a device.
     List,
     /// Print the identity and the registers of the attached Quantis USB.
     Probe(DeviceArgs),
     /// Read random bytes from the attached Quantis USB and write them to
-    /// standard output.
+    /// stdout.
     ///
-    /// The output is raw binary data, meant to be redirected to a file or
-    /// piped to another program; use --hex to print it on a terminal. If an
-    /// error stops the read, the output is truncated (it never contains
-    /// bytes that did not come from the device) and the exit status is 1.
+    /// The output is binary, redirect it to a file or pipe it to another
+    /// program, or use --hex to print it on the terminal. On error the output
+    /// stops (it only contains bytes from the device) and the exit status
+    /// is 1.
     Read(ReadArgs),
 }
 
 #[derive(Args)]
 struct DeviceArgs {
-    /// Serial number of the device to open (see `qrng list`). Required when
-    /// more than one Quantis USB is attached.
+    /// Serial number of the device to open (see `qrng list`). Needed if more
+    /// than one Quantis USB is attached.
     #[arg(short, long)]
     serial: Option<String>,
 }
@@ -70,31 +66,29 @@ struct ReadArgs {
     #[command(flatten)]
     device: DeviceArgs,
 
-    /// Number of bytes to read. Accepts the suffixes K, M and G (powers of
-    /// 1024), e.g. 4K or 10M. There is no upper limit: the data is streamed.
+    /// Number of bytes to read, with optional suffix K, M or G (powers of
+    /// 1024), e.g. 4K or 10M. There is no upper limit.
     #[arg(short = 'n', long = "size", default_value = "1024", value_parser = parse_size)]
     size: u64,
 
-    /// Write the bytes as lowercase hexadecimal text, 32 bytes per line.
+    /// Print the bytes as hex, 32 bytes per line.
     #[arg(long)]
     hex: bool,
 }
 
-/// Bytes read from the device and written to the output at a time.
-///
-/// Like the 8 KiB chunks of `EasyQuantis`, it keeps memory use constant
-/// whatever the requested size. It is a multiple of 32, so every hex line but
-/// the last one is complete.
+// bytes read and written at a time, so the memory used is the same for any
+// size (EasyQuantis uses 8 KiB). multiple of 32 -> only the last hex line can
+// be shorter
 const OUTPUT_CHUNK_SIZE: usize = 64 * 1024;
 
-/// Error of a `qrng` command.
+// error of a command
 #[derive(Debug)]
 enum CliError {
-    /// The device or the driver failed.
+    // device or driver error
     Device(Error),
-    /// Writing the output failed.
+    // can't write the output
     Output(io::Error),
-    /// Raw binary output was requested on a terminal.
+    // binary output on a terminal
     BinaryToTerminal,
 }
 
@@ -127,7 +121,7 @@ fn main() -> ExitCode {
 
     match run(&cli) {
         Ok(()) => ExitCode::SUCCESS,
-        // the reader went away (e.g. `qrng read | head -c 16`): not an error
+        // the reader is gone (e.g. `qrng read | head -c 16`), not an error
         Err(CliError::Output(err)) if err.kind() == io::ErrorKind::BrokenPipe => ExitCode::SUCCESS,
         Err(err) => {
             report(&err);
@@ -200,7 +194,7 @@ fn probe(args: &DeviceArgs) -> Result<(), CliError> {
 
 fn read(args: &ReadArgs) -> Result<(), CliError> {
     let stdout = io::stdout();
-    // checked before opening the device: nothing is read for nothing
+    // check it before opening the device
     if !args.hex && stdout.is_terminal() {
         return Err(CliError::BinaryToTerminal);
     }
@@ -211,14 +205,13 @@ fn read(args: &ReadArgs) -> Result<(), CliError> {
     let mut remaining = args.size;
 
     while remaining > 0 {
-        // `remaining` may not fit in a usize on 32-bit targets
+        // `remaining` could not fit in a usize on 32-bit targets
         let len =
             usize::try_from(remaining).map_or(OUTPUT_CHUNK_SIZE, |r| r.min(OUTPUT_CHUNK_SIZE));
         let chunk = &mut buf[..len];
 
-        // only data from a successful read is written: on error `read` has
-        // wiped `chunk` and nothing of it reaches the output
-        quantis.read(chunk)?;
+        // write only after a successful read, on error nothing of `chunk` is written
+        quantis.fill_bytes(chunk)?;
         if args.hex {
             write_hex(&mut out, chunk)?;
         } else {
@@ -232,8 +225,7 @@ fn read(args: &ReadArgs) -> Result<(), CliError> {
     Ok(())
 }
 
-/// Writes `data` as lowercase hexadecimal, 32 bytes per line, each line
-/// ending with a newline.
+// writes `data` as lowercase hex, 32 bytes per line
 fn write_hex(out: &mut impl Write, data: &[u8]) -> io::Result<()> {
     for line in data.chunks(32) {
         for byte in line {
@@ -244,8 +236,7 @@ fn write_hex(out: &mut impl Write, data: &[u8]) -> io::Result<()> {
     Ok(())
 }
 
-/// Parses a byte count: decimal digits, optionally followed by `K`, `M` or
-/// `G` (powers of 1024, case-insensitive).
+// parses a size: digits with optional K, M or G (powers of 1024, also lowercase)
 fn parse_size(s: &str) -> Result<u64, String> {
     let (digits, multiplier) = match s.as_bytes().last() {
         Some(b'K' | b'k') => (&s[..s.len() - 1], 1u64 << 10),
@@ -254,7 +245,7 @@ fn parse_size(s: &str) -> Result<u64, String> {
         _ => (s, 1),
     };
 
-    // `u64::from_str` also accepts a leading `+`: only plain digits here
+    // `u64::from_str` also accepts a leading `+`, we only want digits
     if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
         return Err(format!(
             "invalid size `{s}`: expected a number of bytes, optionally followed by K, M or G"
@@ -268,7 +259,7 @@ fn parse_size(s: &str) -> Result<u64, String> {
         .ok_or_else(|| format!("size `{s}` is too large"))
 }
 
-/// Prints `err`, the chain of its causes and, when there is one, a hint.
+// prints the error, its causes and a hint if there is one
 fn report(err: &CliError) {
     eprintln!("qrng: error: {err}");
 
@@ -284,7 +275,7 @@ fn report(err: &CliError) {
 
     let hint = match err {
         CliError::Device(Error::PermissionDenied) => Some(
-            "on Linux, install a udev rule for 0aba:0102 and make sure your user is in its group",
+            "on Linux, install contrib/udev/70-quantis-qrng.rules (see the README) and make sure your user is in the `plugdev` group",
         ),
         CliError::Device(Error::Busy) => Some("stop the other program that is using the device"),
         CliError::Device(Error::NoDevice) => Some("check the cable and `lsusb -d 0aba:0102`"),
@@ -325,7 +316,7 @@ mod tests {
         for s in ["", "K", "+5", "-5", "1.5M", "5 K", "5KB", "0x10", "ten"] {
             assert!(parse_size(s).is_err(), "`{s}` accepted");
         }
-        // overflow, in the digits or in the multiplier
+        // overflow of the digits or of the multiplier
         assert!(parse_size("18446744073709551616").is_err());
         assert!(parse_size("17179869184G").is_err());
     }

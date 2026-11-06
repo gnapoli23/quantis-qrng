@@ -1,4 +1,8 @@
-//! [`UsbTransport`] backed by the [`nusb`] crate.
+//! [`UsbTransport`] implemented with [`nusb`].
+//!
+//! The `nusb` errors are converted with private functions and not with `From`
+//! impls, so `nusb` is not part of the public API and a new major version of
+//! `nusb` is not a breaking change for us.
 
 use nusb::{
     Endpoint, Interface, MaybeFuture as _, list_devices,
@@ -14,27 +18,37 @@ use crate::{
     },
 };
 
-impl From<nusb::transfer::TransferError> for TransportError {
-    fn from(value: nusb::transfer::TransferError) -> Self {
-        match value {
-            nusb::transfer::TransferError::Cancelled => TransportError::Timeout,
-            nusb::transfer::TransferError::Stall => TransportError::Stall,
-            nusb::transfer::TransferError::Disconnected => TransportError::Disconnected,
-            nusb::transfer::TransferError::InvalidArgument => TransportError::InvalidArgument,
-            nusb::transfer::TransferError::Fault | nusb::transfer::TransferError::Unknown(_) => {
-                TransportError::Other(Box::new(value))
-            }
-        }
+// nusb transfer error -> TransportError
+fn transfer_error(value: nusb::transfer::TransferError) -> TransportError {
+    use nusb::transfer::TransferError;
+    match value {
+        // nusb cancels the transfer when the timeout expires
+        TransferError::Cancelled => TransportError::Timeout,
+        TransferError::Stall => TransportError::Stall,
+        TransferError::Disconnected => TransportError::Disconnected,
+        TransferError::InvalidArgument => TransportError::InvalidArgument,
+        TransferError::Fault | TransferError::Unknown(_) => TransportError::Other(Box::new(value)),
     }
 }
 
-/// A [`UsbTransport`] backed by the [`nusb`] crate: the transport used by
-/// the real device.
+// nusb error while listing or opening the device -> Error
+fn open_error(value: nusb::Error) -> Error {
+    match value.kind() {
+        nusb::ErrorKind::Disconnected => Error::Disconnected,
+        nusb::ErrorKind::Busy => Error::Busy,
+        nusb::ErrorKind::PermissionDenied => Error::PermissionDenied,
+        nusb::ErrorKind::NotFound => Error::NoDevice,
+        // `ErrorKind` is non exhaustive, new kinds end up here
+        _ => Error::Other(Box::new(value)),
+    }
+}
+
+/// [`UsbTransport`] of the real device, implemented with [`nusb`].
 ///
 /// It owns the claimed interface and the bulk IN endpoint, so the device stays
-/// open, and unavailable to other processes, until the value is dropped.
+/// open (and other processes can't use it) until the value is dropped.
 #[derive(Debug)]
-pub struct NusbTransport {
+pub(crate) struct NusbTransport {
     interface: Interface,         // control_in and control_out
     endpoint: Endpoint<Bulk, In>, // bulk_in and max_packet_size
     serial_number: Option<String>,
@@ -42,13 +56,8 @@ pub struct NusbTransport {
 }
 
 impl NusbTransport {
-    /// Lists the Quantis USB devices attached to the system, without opening
-    /// them.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the USB stack cannot enumerate the devices.
-    pub fn list() -> Result<Vec<DeviceInfo>, Error> {
+    /// Returns the attached Quantis USB devices, without opening them.
+    pub(crate) fn list() -> Result<Vec<DeviceInfo>, Error> {
         Ok(quantis_devices()?
             .iter()
             .map(|d| DeviceInfo {
@@ -61,39 +70,30 @@ impl NusbTransport {
             .collect())
     }
 
-    /// Finds the Quantis USB device, opens it, selects its configuration and
-    /// claims its interface, like the original library.
+    /// Opens the device, selects the configuration and claims the interface,
+    /// like the original library.
     ///
-    /// With `serial == None` exactly one Quantis USB must be attached; with
-    /// `Some(s)` the device with serial number `s` is opened.
+    /// Without `serial` exactly one device must be attached, otherwise the
+    /// device with that serial number is opened (see `select_device`).
     ///
-    /// The serial number and the manufacturer are read here, from what the
-    /// operating system cached at enumeration: no request is sent for them.
-    ///
-    /// # Errors
-    ///
-    /// * [`Error::NoDevice`] if no Quantis USB is attached.
-    /// * [`Error::TooManyDevices`] if the choice is ambiguous (more than one
-    ///   device and no serial, or two devices with the same serial).
-    /// * [`Error::SerialNotFound`] if no device has serial number `s`.
-    /// * [`Error::PermissionDenied`] if the user cannot open the device (on
-    ///   Linux, a udev rule is needed for non-root users).
-    /// * [`Error::Busy`] if another process already holds the interface.
-    /// * [`Error::UnexpectedDescriptor`] or [`Error::NoConfiguration`] if the
-    ///   device does not look like a Quantis USB.
-    /// * Any other error reported by the USB stack.
-    pub fn open(serial: Option<&str>) -> Result<Self, Error> {
+    /// Serial number and manufacturer are taken from the operating system,
+    /// no request is sent to the device for them. The errors are the ones of
+    /// `QuantisUsb::open` and `QuantisUsb::open_serial`.
+    pub(crate) fn open(serial: Option<&str>) -> Result<Self, Error> {
         let dev_info =
             discovery::select_device(quantis_devices()?, serial, nusb::DeviceInfo::serial_number)?;
 
         // open device
-        let device = dev_info.open().wait()?;
+        let device = dev_info.open().wait().map_err(open_error)?;
 
         // we expect to have a single configuration and a single interface
         if device.configurations().count() != 1 {
             return Err(Error::UnexpectedDescriptor);
         }
-        device.set_configuration(CONFIGURATION).wait()?;
+        device
+            .set_configuration(CONFIGURATION)
+            .wait()
+            .map_err(open_error)?;
 
         let configuration = device
             .active_configuration()
@@ -102,10 +102,15 @@ impl NusbTransport {
             return Err(Error::UnexpectedDescriptor);
         }
 
-        let interface = device.claim_interface(INTERFACE).wait()?;
+        let interface = device
+            .claim_interface(INTERFACE)
+            .wait()
+            .map_err(open_error)?;
 
         // bulk in endpoint
-        let endpoint = interface.endpoint::<Bulk, In>(ENDPOINT_BULK_IN)?;
+        let endpoint = interface
+            .endpoint::<Bulk, In>(ENDPOINT_BULK_IN)
+            .map_err(open_error)?;
 
         Ok(NusbTransport {
             interface,
@@ -117,23 +122,23 @@ impl NusbTransport {
 
     /// Serial number of the device, if the operating system provides it.
     #[must_use]
-    pub fn serial_number(&self) -> Option<&str> {
+    pub(crate) fn serial_number(&self) -> Option<&str> {
         self.serial_number.as_deref()
     }
 
-    /// Manufacturer of the device, if the operating system provides it.
-    ///
-    /// Always `None` on Windows, which does not cache this string.
+    /// Manufacturer of the device, if the operating system provides it
+    /// (always `None` on Windows).
     #[must_use]
-    pub fn manufacturer(&self) -> Option<&str> {
+    pub(crate) fn manufacturer(&self) -> Option<&str> {
         self.manufacturer.as_deref()
     }
 }
 
-/// The attached devices with the Quantis USB vendor and product IDs.
+// attached devices with the Quantis USB vendor and product ID
 fn quantis_devices() -> Result<Vec<nusb::DeviceInfo>, Error> {
     Ok(list_devices()
-        .wait()?
+        .wait()
+        .map_err(open_error)?
         .filter(|d| d.vendor_id() == protocol::VENDOR_ID && d.product_id() == protocol::PRODUCT_ID)
         .collect())
 }
@@ -149,14 +154,15 @@ impl UsbTransport for NusbTransport {
             control_type: ControlType::Vendor,
             recipient: Recipient::Interface,
             request,
-            value: 0,                    // wValue: unused by the vendor requests
-            index: u16::from(INTERFACE), // wIndex: interface number (recipient = interface)
+            value: 0,                    // wValue, not used by the vendor requests
+            index: u16::from(INTERFACE), // wIndex, interface number (recipient = interface)
             length: w_length,            // wLength
         };
         let data = self
             .interface
             .control_in(control_in, TRANSFER_TIMEOUT)
-            .wait()?;
+            .wait()
+            .map_err(transfer_error)?;
 
         let n = data.len().min(w_length as usize);
         buf[..n].copy_from_slice(&data[..n]);
@@ -169,13 +175,14 @@ impl UsbTransport for NusbTransport {
             control_type: ControlType::Vendor,
             recipient: Recipient::Interface,
             request,
-            value: 0,                    // wValue: unused by the vendor requests
-            index: u16::from(INTERFACE), // wIndex: interface number (recipient = interface)
-            data: &[],                   // wLength = 0: no data stage
+            value: 0,                    // wValue, not used by the vendor requests
+            index: u16::from(INTERFACE), // wIndex, interface number (recipient = interface)
+            data: &[],                   // wLength = 0, no data stage
         };
         self.interface
             .control_out(control_out, TRANSFER_TIMEOUT)
-            .wait()?;
+            .wait()
+            .map_err(transfer_error)?;
 
         Ok(())
     }
@@ -189,15 +196,15 @@ impl UsbTransport for NusbTransport {
         let buffer = Buffer::new(buf.len());
         let compl = self.endpoint.transfer_blocking(buffer, TRANSFER_TIMEOUT);
 
-        let res = compl.into_result()?;
+        let res = compl.into_result().map_err(transfer_error)?;
         let n = res.len();
         if n > buf.len() {
-            // nusb never returns more than requested; refuse instead of panicking
+            // can't happen with nusb, but better an error than a panic
             return Err(TransportError::Other(
                 format!("bulk transfer returned {n} bytes, {} requested", buf.len()).into(),
             ));
         }
-        // a short packet ends the transfer early: only buf[..n] is filled
+        // a short packet ends the transfer -> only buf[..n] is filled
         buf[..n].copy_from_slice(&res);
 
         Ok(n)

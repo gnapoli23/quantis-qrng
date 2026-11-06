@@ -1,58 +1,56 @@
-//! The error type of the crate.
+//! Error type of the crate.
 
 use crate::usb::{protocol::VendorRequest, transport::TransportError};
 
-/// Error returned by the operations of this crate.
+/// Errors returned by this crate.
+///
+/// The enum is `#[non_exhaustive]`, new variants can be added in a minor
+/// release (e.g. for PCI Express devices).
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum Error {
-    /// A USB transfer failed. See [`TransportError`] for the reason.
+    /// A USB transfer failed, see [`TransportError`].
     #[error(transparent)]
     Transport(#[from] TransportError),
 
-    /// The device answered a vendor request with a response of the wrong
-    /// length.
+    /// The response to a vendor request has the wrong length.
     #[error("unexpected response to {request}: expected {expected} bytes, received {received}")]
     UnexpectedResponse {
-        /// The request that was sent.
+        /// Request sent to the device.
         request: VendorRequest,
-        /// Number of bytes the request should return.
+        /// Expected response length, in bytes.
         expected: usize,
-        /// Number of bytes actually received.
+        /// Received response length, in bytes.
         received: usize,
     },
 
-    /// The module status is `0`: the module is disabled or not ready, and
-    /// does not produce random data.
+    /// The module status is `0`, so the module is disabled or not ready.
     #[error("the random number module is disabled or not ready")]
     ModuleNotReady,
 
-    /// A bulk transfer reported more bytes than were requested.
+    /// A bulk transfer returned more bytes than requested.
     ///
-    /// This is a bug in the [`UsbTransport`](crate::usb::transport::UsbTransport)
-    /// implementation, not a device problem.
+    /// It should never happen: it means there is a bug in this crate or in
+    /// the USB stack.
     #[error("bulk transfer returned {received} bytes, more than the {requested} requested")]
     BulkOverflow {
-        /// Number of bytes requested.
+        /// Requested length, in bytes.
         requested: usize,
-        /// Number of bytes the transport reported.
+        /// Returned length, in bytes.
         received: usize,
     },
 
-    /// A bulk read completed successfully but returned no data.
-    ///
-    /// The device should stream random bytes continuously; an empty
-    /// transfer means it is not producing them.
+    /// A bulk transfer completed without any data.
     #[error("the device returned no random data")]
     NoData,
 
-    /// The device was unplugged or is no longer reachable.
+    /// The device has been unplugged.
     #[error("device disconnected")]
     Disconnected,
 
-    /// The user is not allowed to open the device.
+    /// The user has no permission to open the device.
     ///
-    /// On Linux, non-root users need a udev rule that grants access to the
-    /// device node.
+    /// On Linux a udev rule is needed for non-root users.
     #[error("permission denied while opening the device")]
     PermissionDenied,
 
@@ -60,21 +58,22 @@ pub enum Error {
     #[error("device is busy (already in use by another process?)")]
     Busy,
 
-    /// The module mask does not select the module of the device (bit 0).
+    /// The module mask does not have bit 0 set.
     #[error("invalid module mask: {0:#04x}")]
     InvalidModuleMask(u8),
 
-    /// No Quantis device is attached.
+    /// No Quantis device attached.
     #[error("no Quantis device found")]
     NoDevice,
 
-    /// The choice of the device is ambiguous: more than one Quantis device
-    /// is attached and no serial number was given, or more than one device
-    /// has the requested serial number.
+    /// More than one device matches.
+    ///
+    /// Either more than one device is attached and no serial number was
+    /// given, or two devices have the same serial number.
     #[error("more than one Quantis device found")]
     TooManyDevices,
 
-    /// No attached Quantis device has the requested serial number.
+    /// No attached device has the given serial number.
     #[error("no Quantis device with serial number {0:?}")]
     SerialNotFound(String),
 
@@ -82,25 +81,11 @@ pub enum Error {
     #[error("no active configuration on the device")]
     NoConfiguration,
 
-    /// The device descriptors do not match a Quantis USB (number of
-    /// configurations or interfaces).
+    /// The USB descriptors do not look like the ones of a Quantis USB.
     #[error("unexpected USB descriptors: not a Quantis USB?")]
     UnexpectedDescriptor,
 
-    /// Any other failure reported by the USB stack while opening the device.
+    /// Any other error of the USB stack while opening the device.
     #[error("USB operation failed")]
     Other(#[source] Box<dyn std::error::Error + Send + Sync>),
-}
-
-impl From<nusb::Error> for Error {
-    fn from(value: nusb::Error) -> Self {
-        match value.kind() {
-            nusb::ErrorKind::Disconnected => Error::Disconnected,
-            nusb::ErrorKind::Busy => Error::Busy,
-            nusb::ErrorKind::PermissionDenied => Error::PermissionDenied,
-            nusb::ErrorKind::NotFound => Error::NoDevice,
-            // `ErrorKind` is `#[non_exhaustive]`: new kinds end up here
-            _ => Error::Other(Box::new(value)),
-        }
-    }
 }

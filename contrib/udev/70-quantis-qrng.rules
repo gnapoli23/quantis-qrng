@@ -1,0 +1,19 @@
+# udev rule for ID Quantique Quantis USB (0aba:0102), used by quantis-qrng
+# and the `qrng` tool.
+#
+# Non-root access to the device (/dev/bus/usb/BBB/DDD) for:
+#
+# - the `plugdev` group (servers)
+# - the user logged in at the machine (`uaccess`, desktops)
+#
+# Install:
+#
+#   sudo install -m 0644 70-quantis-qrng.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload-rules
+#   sudo udevadm trigger --subsystem-match=usb --attr-match=idVendor=0aba
+#
+# The file must come before 73-seat-late.rules, otherwise `uaccess` does
+# nothing. If there is no `plugdev` group (e.g. Fedora, Arch) create it or use
+# another group.
+
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="0aba", ATTR{idProduct}=="0102", MODE="0660", GROUP="plugdev", TAG+="uaccess"

@@ -5,8 +5,11 @@ This crate is an independent Rust port of the Quantis C library published by
 ID Quantique SA. It is not affiliated with or endorsed by ID Quantique SA.
 "Quantis" is a trademark of ID Quantique SA.
 
-Portions of this software are derived from the Quantis Software, distributed
-under the following license:
+Portions of this software are derived from the Quantis Software (release
+24.4.2), distributed under the following license. A copy of the original
+sources (not published by ID Quantique) is available at
+https://github.com/sanddweller/QRNGPcieDriver/tree/1955b9cce8f0c552c2cee281a9499506100d3170/libs/src
+
 
 -------------------------------------------------------------------------------
 

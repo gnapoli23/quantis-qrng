@@ -6,16 +6,22 @@ rust-version = "1.85"
 description = "Unofficial pure-Rust driver for ID Quantique Quantis quantum random number generators (QRNG)"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/gnapoli23/quantis-qrng"
+documentation = "https://docs.rs/quantis-qrng"
 readme = "README.md"
 keywords = ["qrng", "random", "quantum", "usb", "driver"]
 categories = ["hardware-support", "cryptography"]
 authors = ["Giovanni Napoli"]
-include = ["/src", "/README.md", "/LICENSE-MIT", "/LICENSE-APACHE", "/NOTICE"]
+include = ["/src", "/contrib", "/README.md", "/CHANGELOG.md", "/LICENSE-MIT", "/LICENSE-APACHE", "/NOTICE"]
 
 [[bin]]
 name = "qrng"
 path = "src/main.rs"
 required-features = ["cli"]
+
+[package.metadata.docs.rs]
+all-features = true
+# the docs are the same on every target
+targets = ["x86_64-unknown-linux-gnu"]
 
 [dependencies]
 thiserror = "2"
@@ -29,6 +35,9 @@ cli = ["dep:clap"]
 [lints.rust]
 unsafe_code = "forbid"
 missing_docs = "warn"
+# no unreachable `pub` items, Debug on every public type
+unreachable_pub = "warn"
+missing_debug_implementations = "warn"
 
 [lints.clippy]
 pedantic = { level = "warn", priority = -1 }

@@ -11,17 +11,17 @@ pub(crate) struct FakeUsbTransport {
     max_packet_size: usize,
     counter: u8,
     limit: Option<usize>,
-    // at most this many bytes per bulk transfer (short packets)
+    // max bytes per bulk transfer (short packets)
     bulk_in_limit: Option<usize>,
-    // bulk transfers that succeed before every next one fails with `Disconnected`
+    // bulk transfers ok before `Disconnected`
     bulk_in_ok_before_disconnect: Option<usize>,
-    // bulk transfers that succeed before the module stops (status 0)
+    // bulk transfers ok before the module stops (status 0)
     bulk_in_ok_before_module_failure: Option<usize>,
-    // a bulk transfer reports this many bytes more than requested
+    // extra bytes reported by every bulk transfer
     bulk_in_overreport: usize,
-    /// Length of every bulk request received, in order.
+    // length of every bulk request, in order
     pub(crate) bulk_in_requests: Vec<usize>,
-    /// `bRequest` of every control IN request received, in order.
+    // `bRequest` of every control IN request, in order
     pub(crate) control_in_requests: Vec<u8>,
 }
 
@@ -135,13 +135,13 @@ impl UsbTransport for FakeUsbTransport {
             *ok -= 1;
         }
 
-        // guess, to check on the real device: a disabled module sends nothing
-        // and the transfer times out
+        // TODO: check on the real device, my guess is that a disabled module
+        // sends nothing and the transfer times out
         if self.state.status == 0 {
             return Err(TransportError::Timeout);
         }
 
-        // this transfer still delivers its data; the status drops after it
+        // this transfer still returns data, the status goes to 0 after it
         if let Some(ok) = self.bulk_in_ok_before_module_failure.as_mut() {
             *ok = ok.saturating_sub(1);
             if *ok == 0 {
@@ -165,41 +165,38 @@ impl UsbTransport for FakeUsbTransport {
 }
 
 impl FakeUsbTransport {
-    pub fn with_max_packet_size(mut self, max_packet_size: usize) -> Self {
+    pub(crate) fn with_max_packet_size(mut self, max_packet_size: usize) -> Self {
         assert!(max_packet_size == 64 || max_packet_size == MAX_BULK_PACKET_SIZE);
 
         self.max_packet_size = max_packet_size;
         self
     }
 
-    pub fn with_control_in_limit(mut self, limit: usize) -> Self {
+    pub(crate) fn with_control_in_limit(mut self, limit: usize) -> Self {
         self.limit = Some(limit);
         self
     }
 
-    /// Every bulk transfer returns at most `limit` bytes, like a device that
-    /// sends short packets. `0` gives empty transfers.
-    pub fn with_bulk_in_limit(mut self, limit: usize) -> Self {
+    // bulk transfers return at most `limit` bytes (short packets), 0 -> empty transfers
+    pub(crate) fn with_bulk_in_limit(mut self, limit: usize) -> Self {
         self.bulk_in_limit = Some(limit);
         self
     }
 
-    /// The first `ok` (at least 1) bulk transfers succeed; right after the
-    /// last of them the module stops and its status becomes 0.
-    pub fn with_module_failure_after(mut self, ok: usize) -> Self {
+    // the first `ok` (at least 1) bulk transfers work, then the module status goes to 0
+    pub(crate) fn with_module_failure_after(mut self, ok: usize) -> Self {
         self.bulk_in_ok_before_module_failure = Some(ok);
         self
     }
 
-    /// Every bulk transfer fills the buffer but reports `extra` more bytes
-    /// than it holds, like a broken transport.
-    pub fn with_bulk_in_overreport(mut self, extra: usize) -> Self {
+    // bulk transfers report `extra` bytes more than the buffer (broken transport)
+    pub(crate) fn with_bulk_in_overreport(mut self, extra: usize) -> Self {
         self.bulk_in_overreport = extra;
         self
     }
 
-    /// The first `ok` bulk transfers succeed, then the device disconnects.
-    pub fn with_bulk_in_disconnect_after(mut self, ok: usize) -> Self {
+    // the first `ok` bulk transfers work, then the device disconnects
+    pub(crate) fn with_bulk_in_disconnect_after(mut self, ok: usize) -> Self {
         self.bulk_in_ok_before_disconnect = Some(ok);
         self
     }
