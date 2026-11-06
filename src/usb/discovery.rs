@@ -56,22 +56,9 @@ impl DeviceInfo {
     }
 }
 
-// Picks the device to open.
-//
-// Without `serial` there must be exactly one device, if there are more we
-// don't guess. With `serial` exactly one device must have that serial number
-// (exact match).
-//
-// The original library selects the device by index, but the order of the
-// devices can change when one is plugged in or out. Also, the index check in
-// `QuantisUsbOpen` (`QuantisUsb_Unix.c`) is off by one
-// (https://github.com/sanddweller/QRNGPcieDriver/blob/1955b9cce8f0c552c2cee281a9499506100d3170/libs/src/Quantis/QuantisUsb_Unix.c#L439):
-//
-//     if ((quantisUsbCount == 0) || (quantisUsbCount < deviceHandle->deviceNumber))
-//
-// it accepts `deviceNumber == quantisUsbCount`, one past the last device, and
-// then reads an uninitialized element of the array. Here there is no index, so
-// this can't happen.
+// the only device without `serial`, otherwise the one with that serial.
+// selection by serial and not by index -> no off-by-one of the C library
+// https://github.com/sanddweller/QRNGPcieDriver/blob/1955b9cce8f0c552c2cee281a9499506100d3170/libs/src/Quantis/QuantisUsb_Unix.c#L439
 pub(crate) fn select_device<T>(
     candidates: Vec<T>,
     serial: Option<&str>,

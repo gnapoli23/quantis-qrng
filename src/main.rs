@@ -54,15 +54,6 @@ struct DeviceArgs {
     serial: Option<String>,
 }
 
-impl DeviceArgs {
-    fn open(&self) -> Result<QuantisUsb, Error> {
-        match &self.serial {
-            Some(serial) => QuantisUsb::open_serial(serial),
-            None => QuantisUsb::open(),
-        }
-    }
-}
-
 #[derive(Args)]
 struct ReadArgs {
     #[command(flatten)]
@@ -132,7 +123,13 @@ impl fmt::Display for CliError {
 fn main() -> ExitCode {
     let cli = Cli::parse();
 
-    match run(&cli) {
+    let result = match &cli.command {
+        Commands::List => list(),
+        Commands::Probe(args) => probe(args),
+        Commands::Read(args) => read(args),
+    };
+
+    match result {
         Ok(()) => ExitCode::SUCCESS,
         // the reader is gone (e.g. `qrng read | head -c 16`), not an error
         Err(CliError::Output(err)) if err.kind() == io::ErrorKind::BrokenPipe => ExitCode::SUCCESS,
@@ -140,14 +137,6 @@ fn main() -> ExitCode {
             report(&err);
             ExitCode::FAILURE
         }
-    }
-}
-
-fn run(cli: &Cli) -> Result<(), CliError> {
-    match &cli.command {
-        Commands::List => list(),
-        Commands::Probe(args) => probe(args),
-        Commands::Read(args) => read(args),
     }
 }
 
@@ -177,7 +166,10 @@ fn list() -> Result<(), CliError> {
 
 fn probe(args: &DeviceArgs) -> Result<(), CliError> {
     // open device
-    let mut quantis = args.open()?;
+    let mut quantis = match &args.serial {
+        Some(serial) => QuantisUsb::open_serial(serial)?,
+        None => QuantisUsb::open()?,
+    };
 
     // collect data
     let manufacturer = quantis.manufacturer().unwrap_or("N/A").to_string();
@@ -221,7 +213,10 @@ fn read(args: &ReadArgs) -> Result<(), CliError> {
         }
     }
 
-    let mut quantis = args.device.open()?;
+    let mut quantis = match &args.device.serial {
+        Some(serial) => QuantisUsb::open_serial(serial)?,
+        None => QuantisUsb::open()?,
+    };
 
     // the file is created only after the device is open, so an existing file is
     // not overwritten if the device can't be used

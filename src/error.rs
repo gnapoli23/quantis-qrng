@@ -96,3 +96,89 @@ pub enum Error {
     #[error("USB operation failed")]
     Other(#[source] Box<dyn std::error::Error + Send + Sync>),
 }
+
+impl From<Error> for std::io::Error {
+    fn from(err: Error) -> Self {
+        use std::io::ErrorKind;
+
+        let kind = match &err {
+            Error::Transport(TransportError::Timeout) => ErrorKind::TimedOut,
+            Error::Transport(TransportError::Disconnected) | Error::Disconnected => {
+                ErrorKind::NotConnected
+            }
+            Error::PermissionDenied => ErrorKind::PermissionDenied,
+            Error::Busy => ErrorKind::ResourceBusy,
+            Error::NoDevice | Error::SerialNotFound(_) => ErrorKind::NotFound,
+            Error::Unsupported(_) => ErrorKind::Unsupported,
+            Error::InvalidModuleMask(_) => ErrorKind::InvalidInput,
+            Error::UnexpectedResponse { .. } | Error::UnexpectedDescriptor => {
+                ErrorKind::InvalidData
+            }
+            Error::Transport(
+                TransportError::Stall | TransportError::InvalidArgument | TransportError::Other(_),
+            )
+            | Error::ModuleNotReady
+            | Error::BulkOverflow { .. }
+            | Error::NoData
+            | Error::TooManyDevices
+            | Error::NoConfiguration
+            | Error::Other(_) => ErrorKind::Other,
+        };
+        std::io::Error::new(kind, err)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::{self, ErrorKind};
+
+    use crate::{
+        error::Error,
+        usb::{TransportError, protocol::VendorRequest},
+    };
+
+    #[test]
+    fn test_io_error_kind() {
+        let cases = [
+            (
+                Error::Transport(TransportError::Timeout),
+                ErrorKind::TimedOut,
+            ),
+            (
+                Error::Transport(TransportError::Disconnected),
+                ErrorKind::NotConnected,
+            ),
+            (Error::Disconnected, ErrorKind::NotConnected),
+            (Error::PermissionDenied, ErrorKind::PermissionDenied),
+            (Error::Busy, ErrorKind::ResourceBusy),
+            (Error::NoDevice, ErrorKind::NotFound),
+            (Error::SerialNotFound("A".into()), ErrorKind::NotFound),
+            (Error::Unsupported("winusb".into()), ErrorKind::Unsupported),
+            (Error::InvalidModuleMask(0), ErrorKind::InvalidInput),
+            (
+                Error::UnexpectedResponse {
+                    request: VendorRequest::GetBoardVersion,
+                    expected: 4,
+                    received: 2,
+                },
+                ErrorKind::InvalidData,
+            ),
+            (Error::UnexpectedDescriptor, ErrorKind::InvalidData),
+            (Error::Transport(TransportError::Stall), ErrorKind::Other),
+            (Error::ModuleNotReady, ErrorKind::Other),
+            (Error::NoData, ErrorKind::Other),
+            (Error::TooManyDevices, ErrorKind::Other),
+        ];
+        for (err, kind) in cases {
+            let msg = err.to_string();
+            assert_eq!(io::Error::from(err).kind(), kind, "{msg}");
+        }
+    }
+
+    #[test]
+    fn test_io_error_keeps_the_original() {
+        let err = io::Error::from(Error::Busy);
+        let inner = err.get_ref().and_then(|e| e.downcast_ref::<Error>());
+        assert!(matches!(inner, Some(Error::Busy)));
+    }
+}

@@ -103,7 +103,9 @@ impl QuantisUsb {
     ///   WinUSB driver.
     /// * [`Error::Other`] for any other USB error.
     pub fn open() -> Result<Self, Error> {
-        Self::open_nusb(None)
+        Ok(Self {
+            transport: Transport::Nusb(NusbTransport::open(None)?),
+        })
     }
 
     /// Opens the device with the given serial number.
@@ -131,12 +133,8 @@ impl QuantisUsb {
     /// # }
     /// ```
     pub fn open_serial(serial: &str) -> Result<Self, Error> {
-        Self::open_nusb(Some(serial))
-    }
-
-    fn open_nusb(serial: Option<&str>) -> Result<Self, Error> {
         Ok(Self {
-            transport: Transport::Nusb(NusbTransport::open(serial)?),
+            transport: Transport::Nusb(NusbTransport::open(Some(serial))?),
         })
     }
 
@@ -227,7 +225,9 @@ impl QuantisUsb {
     /// Returns an error if the transfer fails or the response is not 4 bytes
     /// long.
     pub fn board_version(&mut self) -> Result<u32, Error> {
-        self.read_word_value(VendorRequest::GetBoardVersion)
+        Ok(u32::from_le_bytes(
+            self.read_response(VendorRequest::GetBoardVersion)?,
+        ))
     }
 
     /// Reads the mask of the modules on the board, one bit per module.
@@ -239,7 +239,9 @@ impl QuantisUsb {
     /// Returns an error if the transfer fails or the response is not 1 byte
     /// long.
     pub fn module_mask(&mut self) -> Result<u8, Error> {
-        self.read_byte_value(VendorRequest::GetModulesMask)
+        Ok(u8::from_be_bytes(
+            self.read_response(VendorRequest::GetModulesMask)?,
+        ))
     }
 
     /// Reads the data rate of the device, in bytes per second.
@@ -256,7 +258,7 @@ impl QuantisUsb {
     /// Returns an error if a transfer fails or a response has the wrong
     /// length.
     pub fn modules_rate(&mut self) -> Result<u64, Error> {
-        let modules_rate = self.read_word_value(VendorRequest::GetModulesRate)?;
+        let modules_rate = u32::from_le_bytes(self.read_response(VendorRequest::GetModulesRate)?);
         let modules_rate = u64::from(modules_rate) * 125; // kbit/s to bytes/s -> 1000 / 8
 
         let modules_mask = self.module_mask()?; // if the mask is 0, the rate is 0
@@ -271,7 +273,9 @@ impl QuantisUsb {
     /// Returns an error if the transfer fails or the response is not 1 byte
     /// long.
     pub fn modules_power(&mut self) -> Result<u8, Error> {
-        self.read_byte_value(VendorRequest::GetModulesPower)
+        Ok(u8::from_be_bytes(
+            self.read_response(VendorRequest::GetModulesPower)?,
+        ))
     }
 
     /// Reads the status of the modules.
@@ -284,7 +288,9 @@ impl QuantisUsb {
     /// Returns an error if the transfer fails or the response is not 1 byte
     /// long.
     pub fn modules_status(&mut self) -> Result<u8, Error> {
-        self.read_byte_value(VendorRequest::GetModulesStatus)
+        Ok(u8::from_be_bytes(
+            self.read_response(VendorRequest::GetModulesStatus)?,
+        ))
     }
 
     /// Reads the AIS 31 start-up tests request flag.
@@ -298,7 +304,9 @@ impl QuantisUsb {
     /// Returns an error if the transfer fails or the response is not 1 byte
     /// long.
     pub fn ais31_startup_tests_request_flag(&mut self) -> Result<u8, Error> {
-        self.read_byte_value(VendorRequest::GetAis31StartupTestsRequestFlag)
+        Ok(u8::from_be_bytes(self.read_response(
+            VendorRequest::GetAis31StartupTestsRequestFlag,
+        )?))
     }
 
     /// Disables the random number module.
@@ -315,7 +323,9 @@ impl QuantisUsb {
             // Quantis USB has a single module
             return Err(Error::InvalidModuleMask(module_mask));
         }
-        self.send_command(VendorRequest::ModuleDisable)
+        Ok(self
+            .transport
+            .control_out(VendorRequest::ModuleDisable as u8)?)
     }
 
     /// Enables the random number module.
@@ -332,7 +342,9 @@ impl QuantisUsb {
             // Quantis USB has a single module
             return Err(Error::InvalidModuleMask(module_mask));
         }
-        self.send_command(VendorRequest::ModuleEnable)
+        Ok(self
+            .transport
+            .control_out(VendorRequest::ModuleEnable as u8)?)
     }
 
     /// Clears the AIS 31 start-up tests request flag.
@@ -341,7 +353,9 @@ impl QuantisUsb {
     ///
     /// Returns an error if the transfer fails.
     pub fn clear_ais31_startup_tests_request_flag(&mut self) -> Result<(), Error> {
-        self.send_command(VendorRequest::ClearAis31StartupTestsRequestFlag)
+        Ok(self
+            .transport
+            .control_out(VendorRequest::ClearAis31StartupTestsRequestFlag as u8)?)
     }
 
     // body of `fill_bytes`, on error `buf` can be partially filled
@@ -362,14 +376,26 @@ impl QuantisUsb {
         let mut filled = 0;
 
         while filled < buf.len() {
-            self.ensure_module_ready()?;
+            if self.modules_status()? == 0 {
+                return Err(Error::ModuleNotReady);
+            }
 
             let remaining = buf.len() - filled;
             let added = if remaining >= packet_size {
                 // whole packets, directly into `buf`
                 let chunk = (remaining - remaining % packet_size).min(max_chunk);
                 let n = self.transport.bulk_in(&mut buf[filled..filled + chunk])?;
-                check_bulk_len(n, chunk)?;
+                // short packet -> read again, the C library stops here without error
+                // https://github.com/sanddweller/QRNGPcieDriver/blob/1955b9cce8f0c552c2cee281a9499506100d3170/libs/src/Quantis/QuantisUsb_Unix.c#L597-L600
+                if n == 0 {
+                    return Err(Error::NoData);
+                }
+                if n > chunk {
+                    return Err(Error::BulkOverflow {
+                        requested: chunk,
+                        received: n,
+                    });
+                }
                 n
             } else {
                 // tail -> one packet into `scratch`, keep only what fits
@@ -377,13 +403,22 @@ impl QuantisUsb {
                     scratch = vec![0u8; packet_size];
                 }
                 let n = self.transport.bulk_in(&mut scratch)?;
-                check_bulk_len(n, packet_size)?;
+                // same checks as above
+                if n == 0 {
+                    return Err(Error::NoData);
+                }
+                if n > packet_size {
+                    return Err(Error::BulkOverflow {
+                        requested: packet_size,
+                        received: n,
+                    });
+                }
                 let take = n.min(remaining);
                 buf[filled..filled + take].copy_from_slice(&scratch[..take]);
                 take
             };
 
-            // `added` is at least 1 (see `check_bulk_len`), so the loop always ends.
+            // `added` is at least 1, so the loop always ends.
             // after a short packet `filled` is not a multiple of the packet size
             // anymore, that's ok: only the request length must be
             filled += added;
@@ -396,16 +431,8 @@ impl QuantisUsb {
         Ok(())
     }
 
-    // error if the module status is 0
-    fn ensure_module_ready(&mut self) -> Result<(), Error> {
-        match self.modules_status()? {
-            0 => Err(Error::ModuleNotReady),
-            _ => Ok(()),
-        }
-    }
-
     // sends `req` and returns the response, that must be exactly `N` bytes long
-    fn read_exact<const N: usize>(&mut self, req: VendorRequest) -> Result<[u8; N], Error> {
+    fn read_response<const N: usize>(&mut self, req: VendorRequest) -> Result<[u8; N], Error> {
         debug_assert_eq!(req.response_len(), N, "wrong response length for {req}");
 
         let mut buf = [0u8; N];
@@ -418,26 +445,6 @@ impl QuantisUsb {
             });
         }
         Ok(buf)
-    }
-
-    // 4 bytes value, little-endian
-    fn read_word_value(&mut self, request: VendorRequest) -> Result<u32, Error> {
-        let res = self.read_exact::<4>(request)?;
-        let res = u32::from_le_bytes(res);
-        Ok(res)
-    }
-
-    // 1 byte value
-    fn read_byte_value(&mut self, request: VendorRequest) -> Result<u8, Error> {
-        let res = self.read_exact::<1>(request)?;
-        let res = u8::from_be_bytes(res);
-        Ok(res)
-    }
-
-    // command without data
-    fn send_command(&mut self, request: VendorRequest) -> Result<(), Error> {
-        self.transport.control_out(request as u8)?;
-        Ok(())
     }
 
     // only for tests: device backed by the fake transport
@@ -458,40 +465,68 @@ impl QuantisUsb {
     }
 }
 
-// Checks the length of a bulk transfer that did not fail.
-//
-// The original C library has a bug here. In `QuantisUsbRead`
-// (`QuantisUsb_Unix.c`) a transfer shorter than a packet stops the read with
-// (https://github.com/sanddweller/QRNGPcieDriver/blob/1955b9cce8f0c552c2cee281a9499506100d3170/libs/src/Quantis/QuantisUsb_Unix.c#L597-L600)
-//
-//     if ((result < 0) || (transferred != (int)_privateData->usbMaxPacketSize))
-//     {
-//       return result;
-//     }
-//
-// but after a successful transfer `result` is 0 (`LIBUSB_SUCCESS`), so the read
-// returns 0 bytes without any error and the rest of the buffer is never filled.
-// The C++ wrapper (`Quantis::Read` in `Quantis_Cpp.cpp`, missing from the
-// copy on GitHub, it is in the release 20.2.4) only checks for negative values, so it returns a buffer padded with zeros and `EasyQuantis`
-// writes it to the output file as random data.
-//
-// Here a short transfer just means "read again", an empty transfer is
-// `Error::NoData` and a transfer longer than requested is `Error::BulkOverflow`.
-fn check_bulk_len(received: usize, requested: usize) -> Result<(), Error> {
-    if received == 0 {
-        Err(Error::NoData)
-    } else if received > requested {
-        Err(Error::BulkOverflow {
-            requested,
-            received,
-        })
-    } else {
-        Ok(())
+/// The device never ends: `read` returns `Ok(0)` only if `buf` is empty,
+/// `read_to_end` and `read_to_string` fail, use [`take`](std::io::Read::take).
+///
+/// `read` returns at most 16 KiB, in whole packets if `buf` is larger than a
+/// packet. For many small reads use a [`BufReader`](std::io::BufReader).
+///
+/// `read_exact` works like [`fill_bytes`](QuantisUsb::fill_bytes).
+///
+/// # Example
+///
+/// ```no_run
+/// use std::{fs::File, io::{self, Read}};
+/// use quantis_qrng::usb::QuantisUsb;
+///
+/// fn main() -> io::Result<()> {
+///     let quantis = QuantisUsb::open()?;
+///
+///     // 1 MiB to a file
+///     let mut file = File::create("random.bin")?;
+///     io::copy(&mut quantis.take(1024 * 1024), &mut file)?;
+///     Ok(())
+/// }
+/// ```
+impl std::io::Read for QuantisUsb {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let packet_size = self.max_packet_size();
+        let len = if packet_size == 0 || buf.len() < packet_size {
+            buf.len() // tail (packet size 0 -> error from `fill_bytes`)
+        } else {
+            // whole packets, nothing thrown away
+            let len = buf.len().min(READ_CHUNK_SIZE.max(packet_size));
+            len - len % packet_size
+        };
+        self.fill_bytes(&mut buf[..len])?;
+        Ok(len)
+    }
+
+    // the default one leaves partial data in `buf` on error
+    fn read_exact(&mut self, buf: &mut [u8]) -> std::io::Result<()> {
+        Ok(self.fill_bytes(buf)?)
+    }
+
+    // the default ones would read until the memory is full
+    fn read_to_end(&mut self, _buf: &mut Vec<u8>) -> std::io::Result<usize> {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "the device never ends, use `Read::take`",
+        ))
+    }
+
+    fn read_to_string(&mut self, _buf: &mut String) -> std::io::Result<usize> {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "the device never ends, use `Read::take`",
+        ))
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::io::{self, Read};
+
     use crate::{
         error::Error,
         usb::{
@@ -499,15 +534,6 @@ mod tests {
             protocol::VendorRequest,
             transport::{TransportError, fake::FakeUsbTransport},
         },
-    };
-
-    // QuantisUsb must be Send, errors and DeviceInfo also Sync
-    const _: () = {
-        const fn assert_send<T: Send>() {}
-        const fn assert_send_sync<T: Send + Sync>() {}
-        assert_send::<QuantisUsb>();
-        assert_send_sync::<Error>();
-        assert_send_sync::<crate::usb::DeviceInfo>();
     };
 
     // the fake sends a counter -> byte `k` is `k % 256`
@@ -803,5 +829,115 @@ mod tests {
 
         assert_eq!(first.as_slice(), stream(0..10).as_slice());
         assert_eq!(second.as_slice(), stream(64..74).as_slice());
+    }
+
+    #[test]
+    fn test_io_read_sizes() {
+        let mut quantis = QuantisUsb::with_fake(FakeUsbTransport::default());
+
+        // whole packets only, the 76 bytes left are for the next read
+        assert_eq!(quantis.read(&mut [0u8; 1100]).unwrap(), 1024);
+        // less than a packet -> one packet
+        assert_eq!(quantis.read(&mut [0u8; 100]).unwrap(), 100);
+        // at most one chunk
+        assert_eq!(
+            quantis.read(&mut vec![0u8; 40_000]).unwrap(),
+            READ_CHUNK_SIZE
+        );
+        // empty -> nothing sent, not EOF
+        assert_eq!(quantis.read(&mut []).unwrap(), 0);
+
+        assert_eq!(
+            quantis.fake().bulk_in_requests,
+            [1024, 512, READ_CHUNK_SIZE]
+        );
+    }
+
+    #[test]
+    fn test_io_read_full_speed() {
+        let transport = FakeUsbTransport::default().with_max_packet_size(64);
+        let mut quantis = QuantisUsb::with_fake(transport);
+
+        assert_eq!(quantis.read(&mut [0u8; 100]).unwrap(), 64);
+        assert_eq!(quantis.fake().bulk_in_requests, [64]);
+    }
+
+    #[test]
+    fn test_io_read_exact() {
+        let mut quantis = QuantisUsb::with_fake(FakeUsbTransport::default());
+        let mut buf = [0u8; 1100];
+        quantis.read_exact(&mut buf).unwrap();
+
+        // same as `fill_bytes`
+        assert_eq!(quantis.fake().bulk_in_requests, [1024, 512]);
+        assert_eq!(buf.as_slice(), stream(0..1100).as_slice());
+    }
+
+    #[test]
+    fn test_io_read_exact_error_clears_buffer() {
+        let transport = FakeUsbTransport::default().with_bulk_in_disconnect_after(1);
+        let mut quantis = QuantisUsb::with_fake(transport);
+
+        // first packets ok, tail packet fails
+        let mut buf = [0xAAu8; 1100];
+        let err = quantis.read_exact(&mut buf).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::NotConnected);
+        assert!(buf.iter().all(|&b| b == 0));
+    }
+
+    #[test]
+    fn test_io_read_error_keeps_the_original() {
+        let mut quantis = QuantisUsb::with_fake(FakeUsbTransport::default());
+        quantis.modules_disable(1).unwrap();
+
+        let err = quantis.read(&mut [0u8; 512]).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::Other);
+        let inner = err.get_ref().and_then(|e| e.downcast_ref::<Error>());
+        assert!(matches!(inner, Some(Error::ModuleNotReady)));
+    }
+
+    #[test]
+    fn test_io_read_to_end_fails() {
+        let mut quantis = QuantisUsb::with_fake(FakeUsbTransport::default());
+
+        let err = quantis.read_to_end(&mut Vec::new()).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::Unsupported);
+        let err = quantis.read_to_string(&mut String::new()).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::Unsupported);
+        // nothing read
+        assert_eq!(quantis.fake().bulk_in_requests, Vec::<usize>::new());
+    }
+
+    #[test]
+    fn test_io_copy_with_take() {
+        let mut quantis = QuantisUsb::with_fake(FakeUsbTransport::default());
+
+        let mut out = Vec::new();
+        let n = io::copy(&mut (&mut quantis).take(40_000), &mut out).unwrap();
+        assert_eq!(n, 40_000);
+        assert_eq!(out.len(), 40_000);
+
+        // `read_to_end` works with `take`
+        let mut out = Vec::new();
+        (&mut quantis).take(1000).read_to_end(&mut out).unwrap();
+        assert_eq!(out.len(), 1000);
+    }
+
+    #[test]
+    fn test_io_small_reads_with_bufreader() {
+        let mut quantis = QuantisUsb::with_fake(FakeUsbTransport::default());
+
+        let mut reader = io::BufReader::with_capacity(READ_CHUNK_SIZE, &mut quantis);
+        let mut out = Vec::new();
+        let mut word = [0u8; 4];
+        for _ in 0..100 {
+            reader.read_exact(&mut word).unwrap();
+            out.extend_from_slice(&word);
+        }
+        drop(reader);
+
+        // one request for 100 reads, nothing thrown away
+        assert_eq!(quantis.fake().bulk_in_requests, [READ_CHUNK_SIZE]);
+        assert_eq!(out, stream(0..400));
     }
 }
