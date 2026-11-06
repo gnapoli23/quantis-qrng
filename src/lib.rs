@@ -1,9 +1,9 @@
 //! Unofficial pure-Rust driver for ID Quantique **Quantis** quantum random
 //! number generators.
 //!
-//! > **Status: early development.** The vendor commands of Quantis USB work;
-//! > reading random data is not implemented yet. PCIe devices are not
-//! > supported yet.
+//! > **Status: early development.** The vendor commands of Quantis USB work
+//! > on real hardware; reading random data is implemented but not yet tested
+//! > on a real device. PCIe devices are not supported yet.
 //!
 //! The driver runs entirely in user space and talks to the device through
 //! [`nusb`](https://docs.rs/nusb): no C library and no kernel module are
@@ -16,6 +16,9 @@
 //! let mut quantis = QuantisUsb::open()?;
 //! println!("serial number: {:?}", quantis.serial_number());
 //! println!("data rate: {} bytes/s", quantis.modules_rate()?);
+//!
+//! let mut random = [0u8; 32];
+//! quantis.read(&mut random)?;
 //! # Ok(())
 //! # }
 //! ```

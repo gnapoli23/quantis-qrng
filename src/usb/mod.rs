@@ -210,7 +210,162 @@ impl<T: UsbTransport> QuantisUsb<T> {
     pub fn max_packet_size(&self) -> usize {
         self.transport.max_packet_size()
     }
+
+    /// Fills `buf` with random bytes read from the device.
+    ///
+    /// Returns `Ok(())` only when **every** byte of `buf` has been written
+    /// with data received from the device in this call. An empty buffer
+    /// returns immediately without talking to the device.
+    ///
+    /// On error `buf` is overwritten with zeros, so that a caller that
+    /// ignores the error cannot mistake a partially filled buffer for random
+    /// data. The zeros are not random: never use `buf` after an error.
+    ///
+    /// # How the device is read
+    ///
+    /// * Before every bulk transfer the module status is read, like the
+    ///   original library does; a status of `0` stops the read with
+    ///   [`Error::ModuleNotReady`]. The original library checks it every 512
+    ///   bytes, this method every transfer (at most [`READ_CHUNK_SIZE`]
+    ///   bytes).
+    /// * The device only accepts bulk requests for whole packets of
+    ///   [`max_packet_size`](Self::max_packet_size) bytes. The largest
+    ///   multiple of the packet size is read straight into `buf`; the tail
+    ///   shorter than a packet is read as one more packet into an internal
+    ///   buffer, and the bytes that do not fit in `buf` are discarded, never
+    ///   returned by a later call.
+    /// * A short packet is not an error: the read goes on until `buf` is
+    ///   full. Every transfer either fails or adds at least one byte, so the
+    ///   method always terminates.
+    ///
+    /// # Errors
+    ///
+    /// * [`Error::ModuleNotReady`] if the module status is `0` before a
+    ///   transfer.
+    /// * [`Error::NoData`] if a transfer completes without any data.
+    /// * [`Error::BulkOverflow`] if the transport reports more bytes than
+    ///   requested (a bug in the transport).
+    /// * [`Error::UnexpectedDescriptor`] if the bulk endpoint reports a
+    ///   maximum packet size of 0.
+    /// * [`Error::Transport`] or [`Error::UnexpectedResponse`] if a transfer
+    ///   fails, for example on timeout or disconnection.
+    pub fn read(&mut self, buf: &mut [u8]) -> Result<(), Error> {
+        let result = self.fill(buf);
+        if result.is_err() {
+            // do not leave partial device output behind
+            buf.fill(0);
+        }
+        result
+    }
+
+    // The body of `read`: on error `buf` may be partially filled.
+    fn fill(&mut self, buf: &mut [u8]) -> Result<(), Error> {
+        if buf.is_empty() {
+            return Ok(());
+        }
+
+        let packet_size = self.max_packet_size();
+        if packet_size == 0 {
+            return Err(Error::UnexpectedDescriptor);
+        }
+        // largest request: a whole number of packets, at least one
+        let max_chunk = (READ_CHUNK_SIZE / packet_size).max(1) * packet_size;
+
+        // one packet, for the tail shorter than a packet; allocated only if needed
+        let mut scratch: Vec<u8> = Vec::new();
+        let mut filled = 0;
+
+        while filled < buf.len() {
+            self.ensure_module_ready()?;
+
+            let remaining = buf.len() - filled;
+            let added = if remaining >= packet_size {
+                // whole packets, straight into `buf`
+                let chunk = (remaining - remaining % packet_size).min(max_chunk);
+                let n = self.transport.bulk_in(&mut buf[filled..filled + chunk])?;
+                check_bulk_len(n, chunk)?;
+                n
+            } else {
+                // tail: one packet into `scratch`, keep only what fits
+                if scratch.is_empty() {
+                    scratch = vec![0u8; packet_size];
+                }
+                let n = self.transport.bulk_in(&mut scratch)?;
+                check_bulk_len(n, packet_size)?;
+                let take = n.min(remaining);
+                buf[filled..filled + take].copy_from_slice(&scratch[..take]);
+                take
+            };
+
+            // `added >= 1` (checked above): the loop always makes progress.
+            // After a short packet `filled` is no longer a multiple of the
+            // packet size; that is fine, only request lengths must be.
+            filled += added;
+        }
+
+        // best effort: do not leave the discarded tail bytes in freed memory
+        scratch.fill(0);
+        std::hint::black_box(&scratch);
+
+        Ok(())
+    }
+
+    // Fails with `Error::ModuleNotReady` if the module status is 0.
+    fn ensure_module_ready(&mut self) -> Result<(), Error> {
+        match self.modules_status()? {
+            0 => Err(Error::ModuleNotReady),
+            _ => Ok(()),
+        }
+    }
 }
+
+/// Checks the length `received` of a successful bulk transfer of `requested`
+/// bytes.
+///
+/// # Bug of the original library
+///
+/// In the original C library (`QuantisUsbRead` in `QuantisUsb_Unix.c`), a
+/// bulk transfer that succeeds with fewer bytes than a packet ends the read
+/// with:
+///
+/// ```c
+/// if ((result < 0) || (transferred != (int)_privateData->usbMaxPacketSize))
+/// {
+///   return result;
+/// }
+/// ```
+///
+/// After a successful transfer `result` is `LIBUSB_SUCCESS` (`0`), so the
+/// read "succeeds" with 0 bytes and stops, leaving the rest of the caller's
+/// buffer unfilled. The C++ wrapper (`idQ::Quantis::Read`, `Quantis_Cpp.cpp`)
+/// only treats negative values as errors and returns its buffer, a
+/// `std::string` resized to the requested size, so the missing part is made
+/// of zero bytes; `EasyQuantis` then writes it to the output file as random
+/// data.
+///
+/// Here a short transfer is never a success by itself: [`QuantisUsb::read`]
+/// keeps reading until the buffer is full, an empty transfer is an error
+/// ([`Error::NoData`]), and so is a length larger than requested.
+fn check_bulk_len(received: usize, requested: usize) -> Result<(), Error> {
+    if received == 0 {
+        Err(Error::NoData)
+    } else if received > requested {
+        Err(Error::BulkOverflow {
+            requested,
+            received,
+        })
+    } else {
+        Ok(())
+    }
+}
+
+/// Largest bulk request sent by [`QuantisUsb::read`], in bytes.
+///
+/// A Quantis USB 4M streams about 500 000 bytes/s and every transfer has a
+/// timeout of [`TRANSFER_TIMEOUT`](protocol::TRANSFER_TIMEOUT) (1 s): a chunk
+/// must be well below what the device produces in that time. 16 KiB take
+/// about 33 ms and are a multiple of both packet sizes (64 and 512).
+pub const READ_CHUNK_SIZE: usize = 16 * 1024;
 
 impl QuantisUsb<NusbTransport> {
     /// Opens the Quantis USB device attached to the system.
@@ -247,8 +402,17 @@ impl QuantisUsb<NusbTransport> {
 mod tests {
     use crate::{
         error::Error,
-        usb::{QuantisUsb, protocol::VendorRequest, transport::fake::FakeUsbTransport},
+        usb::{
+            QuantisUsb, READ_CHUNK_SIZE,
+            protocol::VendorRequest,
+            transport::{TransportError, fake::FakeUsbTransport},
+        },
     };
+
+    // The fake streams a counter: byte `k` of the stream is `k % 256`.
+    fn stream(range: std::ops::Range<usize>) -> Vec<u8> {
+        range.map(|k| (k % 256).to_le_bytes()[0]).collect()
+    }
 
     #[test]
     fn test_get_board_version() {
@@ -332,5 +496,210 @@ mod tests {
                 received: 2
             })
         ));
+    }
+
+    #[test]
+    fn test_read_empty_buffer_sends_nothing() {
+        let mut quantis = QuantisUsb::new(FakeUsbTransport::default());
+        quantis.read(&mut []).unwrap();
+        assert!(quantis.transport.bulk_in_requests.is_empty());
+        assert!(quantis.transport.control_in_requests.is_empty());
+    }
+
+    #[test]
+    fn test_read_less_than_a_packet() {
+        let mut quantis = QuantisUsb::new(FakeUsbTransport::default());
+        let mut buf = [0u8; 100];
+        quantis.read(&mut buf).unwrap();
+
+        assert_eq!(quantis.transport.bulk_in_requests, [512]);
+        assert_eq!(buf.as_slice(), stream(0..100).as_slice());
+    }
+
+    #[test]
+    fn test_read_whole_packets() {
+        let mut quantis = QuantisUsb::new(FakeUsbTransport::default());
+        let mut buf = [0u8; 1024];
+        quantis.read(&mut buf).unwrap();
+
+        assert_eq!(quantis.transport.bulk_in_requests, [1024]);
+        assert_eq!(buf.as_slice(), stream(0..1024).as_slice());
+    }
+
+    #[test]
+    fn test_read_packets_and_tail() {
+        let mut quantis = QuantisUsb::new(FakeUsbTransport::default());
+        let mut buf = [0u8; 1100];
+        quantis.read(&mut buf).unwrap();
+
+        // 2 packets straight into `buf`, then one more packet for the 76-byte tail
+        assert_eq!(quantis.transport.bulk_in_requests, [1024, 512]);
+        assert_eq!(buf.as_slice(), stream(0..1100).as_slice());
+
+        // the 436 bytes of the tail packet that did not fit are discarded
+        let mut buf = [0u8; 512];
+        quantis.read(&mut buf).unwrap();
+        assert_eq!(buf.as_slice(), stream(1536..2048).as_slice());
+    }
+
+    #[test]
+    fn test_read_full_speed_packets_and_tail() {
+        let transport = FakeUsbTransport::default().with_max_packet_size(64);
+        let mut quantis = QuantisUsb::new(transport);
+        let mut buf = [0u8; 100];
+        quantis.read(&mut buf).unwrap();
+
+        assert_eq!(quantis.transport.bulk_in_requests, [64, 64]);
+        assert_eq!(buf.as_slice(), stream(0..100).as_slice());
+    }
+
+    #[test]
+    fn test_read_large_buffer_is_chunked() {
+        let mut quantis = QuantisUsb::new(FakeUsbTransport::default());
+        let mut buf = vec![0u8; 40_000];
+        quantis.read(&mut buf).unwrap();
+
+        // 40 000 = 16 384 + 16 384 + 7 168 (14 packets) + 64-byte tail
+        assert_eq!(
+            quantis.transport.bulk_in_requests,
+            [READ_CHUNK_SIZE, READ_CHUNK_SIZE, 7168, 512]
+        );
+        assert_eq!(buf, stream(0..40_000));
+    }
+
+    #[test]
+    fn test_read_short_packets() {
+        let transport = FakeUsbTransport::default()
+            .with_max_packet_size(64)
+            .with_bulk_in_limit(10);
+        let mut quantis = QuantisUsb::new(transport);
+        let mut buf = [0u8; 150];
+        quantis.read(&mut buf).unwrap();
+
+        assert_eq!(buf.as_slice(), stream(0..150).as_slice());
+        // every request is still a whole number of packets
+        let requests = &quantis.transport.bulk_in_requests;
+        assert_eq!(requests.len(), 15); // 10 bytes each
+        assert!(requests.iter().all(|&len| len > 0 && len % 64 == 0));
+    }
+
+    #[test]
+    fn test_read_empty_transfer_is_an_error() {
+        let transport = FakeUsbTransport::default().with_bulk_in_limit(0);
+        let mut quantis = QuantisUsb::new(transport);
+
+        // whole packets
+        let err = quantis.read(&mut [0u8; 512]).unwrap_err();
+        assert!(matches!(err, Error::NoData));
+
+        // tail
+        let err = quantis.read(&mut [0u8; 10]).unwrap_err();
+        assert!(matches!(err, Error::NoData));
+    }
+
+    #[test]
+    fn test_read_propagates_transport_errors() {
+        let transport = FakeUsbTransport::default().with_bulk_in_disconnect_after(1);
+        let mut quantis = QuantisUsb::new(transport);
+
+        // the first packets arrive, the tail packet fails
+        let mut buf = [0xAAu8; 1100];
+        let err = quantis.read(&mut buf).unwrap_err();
+        assert!(matches!(
+            err,
+            Error::Transport(TransportError::Disconnected)
+        ));
+        // the 1024 bytes already received are wiped
+        assert!(buf.iter().all(|&b| b == 0));
+    }
+
+    #[test]
+    fn test_read_with_module_disabled() {
+        let mut quantis = QuantisUsb::new(FakeUsbTransport::default());
+        quantis.modules_disable(1).unwrap();
+
+        let err = quantis.read(&mut [0u8; 512]).unwrap_err();
+        assert!(matches!(err, Error::ModuleNotReady));
+        // stopped before asking for data
+        assert!(quantis.transport.bulk_in_requests.is_empty());
+    }
+
+    #[test]
+    fn test_read_checks_status_before_every_transfer() {
+        let mut quantis = QuantisUsb::new(FakeUsbTransport::default());
+        quantis.read(&mut vec![0u8; 40_000]).unwrap();
+
+        // 4 transfers, each preceded by a status request and nothing else
+        assert_eq!(quantis.transport.bulk_in_requests.len(), 4);
+        assert_eq!(
+            quantis.transport.control_in_requests,
+            [VendorRequest::GetModulesStatus as u8; 4]
+        );
+    }
+
+    #[test]
+    fn test_read_module_failure_mid_read() {
+        let transport = FakeUsbTransport::default().with_module_failure_after(1);
+        let mut quantis = QuantisUsb::new(transport);
+
+        let mut buf = vec![0xAAu8; 40_000];
+        let err = quantis.read(&mut buf).unwrap_err();
+        assert!(matches!(err, Error::ModuleNotReady));
+        // one chunk arrived, then the status check stopped the read
+        assert_eq!(quantis.transport.bulk_in_requests, [READ_CHUNK_SIZE]);
+        assert!(buf.iter().all(|&b| b == 0));
+    }
+
+    #[test]
+    fn test_read_status_read_failure() {
+        // the status request itself fails: 0 bytes instead of 1
+        let transport = FakeUsbTransport::default().with_control_in_limit(0);
+        let mut quantis = QuantisUsb::new(transport);
+
+        let err = quantis.read(&mut [0u8; 512]).unwrap_err();
+        assert!(matches!(
+            err,
+            Error::UnexpectedResponse {
+                request: VendorRequest::GetModulesStatus,
+                expected: 1,
+                received: 0
+            }
+        ));
+        assert!(quantis.transport.bulk_in_requests.is_empty());
+    }
+
+    #[test]
+    fn test_read_rejects_overreporting_transport() {
+        let transport = FakeUsbTransport::default().with_bulk_in_overreport(1);
+        let mut quantis = QuantisUsb::new(transport);
+
+        // whole packets
+        let mut buf = [0xAAu8; 512];
+        let err = quantis.read(&mut buf).unwrap_err();
+        assert!(matches!(
+            err,
+            Error::BulkOverflow {
+                requested: 512,
+                received: 513
+            }
+        ));
+        assert!(buf.iter().all(|&b| b == 0));
+
+        // tail
+        let err = quantis.read(&mut [0u8; 10]).unwrap_err();
+        assert!(matches!(err, Error::BulkOverflow { .. }));
+    }
+
+    #[test]
+    fn test_read_never_repeats_discarded_bytes() {
+        // many tail-only reads: every byte of the stream is returned at most once
+        let mut quantis = QuantisUsb::new(FakeUsbTransport::default().with_max_packet_size(64));
+        let mut first = [0u8; 10];
+        let mut second = [0u8; 10];
+        quantis.read(&mut first).unwrap();
+        quantis.read(&mut second).unwrap();
+
+        assert_eq!(first.as_slice(), stream(0..10).as_slice());
+        assert_eq!(second.as_slice(), stream(64..74).as_slice());
     }
 }

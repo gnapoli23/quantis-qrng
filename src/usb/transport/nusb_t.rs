@@ -174,6 +174,12 @@ impl UsbTransport for NusbTransport {
 
         let res = compl.into_result()?;
         let n = res.len();
+        if n > buf.len() {
+            // nusb never returns more than requested; refuse instead of panicking
+            return Err(TransportError::Other(
+                format!("bulk transfer returned {n} bytes, {} requested", buf.len()).into(),
+            ));
+        }
         // a short packet ends the transfer early: only buf[..n] is filled
         buf[..n].copy_from_slice(&res);
 

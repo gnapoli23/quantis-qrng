@@ -21,6 +21,30 @@ pub enum Error {
         received: usize,
     },
 
+    /// The module status is `0`: the module is disabled or not ready, and
+    /// does not produce random data.
+    #[error("the random number module is disabled or not ready")]
+    ModuleNotReady,
+
+    /// A bulk transfer reported more bytes than were requested.
+    ///
+    /// This is a bug in the [`UsbTransport`](crate::usb::transport::UsbTransport)
+    /// implementation, not a device problem.
+    #[error("bulk transfer returned {received} bytes, more than the {requested} requested")]
+    BulkOverflow {
+        /// Number of bytes requested.
+        requested: usize,
+        /// Number of bytes the transport reported.
+        received: usize,
+    },
+
+    /// A bulk read completed successfully but returned no data.
+    ///
+    /// The device should stream random bytes continuously; an empty
+    /// transfer means it is not producing them.
+    #[error("the device returned no random data")]
+    NoData,
+
     /// The device was unplugged or is no longer reachable.
     #[error("device disconnected")]
     Disconnected,
