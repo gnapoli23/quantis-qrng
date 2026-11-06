@@ -45,7 +45,7 @@
 //! The `qrng` tool is built with the `cli` feature:
 //!
 //! ```sh
-//! cargo install quantis-qrng --features cli
+//! cargo install quantis-qrng --features cli # add `--version` for a pre-release
 //! qrng list
 //! qrng read -n 1M > random.bin
 //! ```

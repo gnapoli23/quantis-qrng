@@ -22,16 +22,18 @@ generators (QRNG).
 Library:
 
 ```sh
-cargo add quantis-qrng
+cargo add quantis-qrng@0.1.0-alpha.1
 ```
 
 `qrng` command-line tool:
 
 ```sh
-cargo install quantis-qrng --features cli
-# or from git, before the first release
-cargo install --git https://github.com/gnapoli23/quantis-qrng --features cli
+cargo install quantis-qrng --version 0.1.0-alpha.1 --features cli
 ```
+
+For now only pre-releases are published, and cargo uses a pre-release only
+if the version is given explicitly. After 0.1.0 `cargo add quantis-qrng` and
+`cargo install quantis-qrng --features cli` are enough.
 
 MSRV is Rust 1.85.
 
@@ -177,8 +179,9 @@ order.
 
 Commit messages follow [Conventional Commits](https://www.conventionalcommits.org)
 (`feat:`, `fix:`, `refactor:`, `docs:`, ..., with `!` for breaking changes).
-[CHANGELOG.md](CHANGELOG.md) is generated from them with
-[git-cliff](https://git-cliff.org): `git cliff -o CHANGELOG.md` (config in
+[CHANGELOG.md](CHANGELOG.md) is updated from them with
+[git-cliff](https://git-cliff.org) at every release:
+`git cliff --unreleased --tag vX.Y.Z --prepend CHANGELOG.md` (config in
 `cliff.toml`).
 
 ## Disclaimer
