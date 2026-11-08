@@ -30,9 +30,6 @@ cargo add quantis-qrng@0.1.0-alpha.1
 cargo install quantis-qrng --version 0.1.0-alpha.1 --features cli
 ```
 
-Only pre-releases for now, cargo needs the explicit version. From 0.1.0 it
-won't be needed.
-
 MSRV is Rust 1.85.
 
 ### Platforms
@@ -44,9 +41,7 @@ MSRV is Rust 1.85.
 | Windows | not tested yet, needs the WinUSB driver |
 
 On Windows the device must use the **WinUSB** driver, not the ID Quantique
-one. It can be replaced with [Zadig](https://zadig.akeo.ie), but then the
-ID Quantique software doesn't work anymore. Use `qrng read -o FILE` instead of
-`>`, the shell can change binary data (Windows PowerShell does).
+one.
 
 ### Device access on Linux
 
@@ -105,7 +100,7 @@ fn main() -> Result<(), quantis_qrng::Error> {
 }
 ```
 
-`fill_bytes` returns `Ok` only if the whole buffer has been filled, on error
+`fill_bytes` returns `Ok` **only if the whole buffer has been filled**, on error
 the buffer is set to zero. Like the original library, it checks the module
 status before every transfer.
 
@@ -126,13 +121,10 @@ fn main() -> io::Result<()> {
 }
 ```
 
-`read_exact` works like `fill_bytes`. The errors become `io::Error` with the
-closest `io::ErrorKind`, the original `Error` is inside.
-
 ## Differences from the original library
 
-Same behaviour of the ID Quantique C library (release 24.4.2), without its
-bugs. There is no official repository, a copy of the sources is in
+Same behaviour of the ID Quantique C library (release 24.4.2), with some small differences.
+There is no official repository, a copy of the sources is in
 [sanddweller/QRNGPcieDriver](https://github.com/sanddweller/QRNGPcieDriver/tree/1955b9cce8f0c552c2cee281a9499506100d3170/libs/src).
 
 - After a short USB transfer
@@ -141,7 +133,7 @@ bugs. There is no official repository, a copy of the sources is in
   file with zeros. Here the buffer is always filled, or the read fails.
 - The device is selected by serial number, not by index. The index check of
   [`QuantisUsbOpen`](https://github.com/sanddweller/QRNGPcieDriver/blob/1955b9cce8f0c552c2cee281a9499506100d3170/libs/src/Quantis/QuantisUsb_Unix.c#L439)
-  is off by one and reads uninitialized memory.
+  is off by one so it reads a portion of uninitialized memory.
 - `qrng list` doesn't open the devices (`EasyQuantis -l` does), so it doesn't
   get in the way of a running service.
 
@@ -153,24 +145,13 @@ After 0.1, in no particular order.
   - A buffered `QuantisRng`, otherwise every `u32` costs a 512 bytes packet.
     Buffered bytes returned only once, buffer cleared on errors and on drop, no
     `Clone` or `Copy`.
-  - No `TryCryptoRng` on the raw output, it can have a small bias. Better as
-    seed for a CSPRNG (`ChaCha20Rng::try_from_rng(&mut quantis_rng)`).
+  - No `TryCryptoRng` on the raw output, it can have a small bias, by using an extractor matrix (filter).
 - **Uniform numbers**: integers in a range and floats in `[0, 1)`, also in
-  `qrng read` (`--integers --min --max`, `--floats`). The original library gets
-  them wrong: scaled integers
-  ([`QuantisReadScaledInt`](https://github.com/sanddweller/QRNGPcieDriver/blob/1955b9cce8f0c552c2cee281a9499506100d3170/libs/src/Quantis/Quantis_C.c#L773-L806))
-  are biased (negative samples are never discarded and `max - min + 1` can
-  overflow) and doubles
-  ([`ConvertToDouble_01`](https://github.com/sanddweller/QRNGPcieDriver/blob/1955b9cce8f0c552c2cee281a9499506100d3170/libs/src/Quantis/Conversion.c#L61-L66))
-  can be `1.0`.
+  `qrng read` (`--integers --min --max`, `--floats`).
 - **Randomness extraction**, the matrix extractor of `QuantisExtensions`
   (removes the bias, so a proper `TryCryptoRng`).
 - **Quantis PCIe** with the ID Quantique kernel driver (`/dev/qrandomN`). The
-  registers need `ioctl`, and the crate forbids `unsafe`. The original read loop
-  ([`QuantisPciRead`](https://github.com/sanddweller/QRNGPcieDriver/blob/1955b9cce8f0c552c2cee281a9499506100d3170/libs/src/Quantis/QuantisPci_Unix.c#L463-L501))
-  never ends if `read()` returns 0, to avoid here.
-- **Public transport layer**, only if someone needs it. Internal for now, so
-  it can change without breaking anything.
+  registers need `ioctl`, and the crate forbids `unsafe` for now.
 - **Async API**, nusb is already async.
 - **More `qrng` commands**: enable/disable the module, clear the AIS 31 flag.
 - **macOS and Windows** tests.
