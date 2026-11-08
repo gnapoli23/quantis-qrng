@@ -11,7 +11,7 @@ readme = "README.md"
 keywords = ["qrng", "random", "quantum", "usb", "driver"]
 categories = ["hardware-support", "cryptography"]
 authors = ["Giovanni Napoli"]
-include = ["/src", "/contrib", "/README.md", "/CHANGELOG.md", "/LICENSE-MIT", "/LICENSE-APACHE", "/NOTICE"]
+include = ["/src", "/README.md", "/CHANGELOG.md", "/LICENSE-MIT", "/LICENSE-APACHE", "/NOTICE"]
 
 [[bin]]
 name = "qrng"
@@ -28,10 +28,16 @@ thiserror = "2"
 nusb = "0.2"
 clap = { version = "4", features = ["derive"], optional = true }
 const-hex = { version = "1.19", optional = true }
+rand_core = { version = "0.10", optional = true }
+
+[dev-dependencies]
+bip39 = "3"
+rand = { version = "0.10", default-features = false, features = ["std_rng", "sys_rng"] }
 
 [features]
 default = []
-cli = ["dep:clap", "dep:const-hex"]
+cli = ["dep:clap", "dep:const-hex", "rand_core"]
+rand_core = ["dep:rand_core"]
 
 [lints.rust]
 unsafe_code = "forbid"

@@ -3,7 +3,8 @@
 //! * `list` prints the attached Quantis USB devices, without opening them.
 //! * `probe` prints info and registers of a device. It only reads, nothing is
 //!   changed on the device.
-//! * `read` writes random bytes to stdout or to a file, raw or as hex.
+//! * `read` writes random bytes to stdout or to a file, raw or as hex, or
+//!   integers and floats in a range.
 //!
 //! `probe` and `read` open the only attached device, or the one with the
 //! serial number given with `--serial`.
@@ -11,14 +12,19 @@
 use std::{
     error::Error as _,
     fmt,
-    fs::File,
+    fs::{self, File},
     io::{self, BufWriter, IsTerminal as _, Write},
     path::PathBuf,
     process::ExitCode,
 };
 
-use clap::{Args, Parser, Subcommand};
-use quantis_qrng::{Error, usb::QuantisUsb};
+use clap::{Args, Parser, Subcommand, error::ErrorKind};
+use quantis_qrng::{
+    Error,
+    extractor::Matrix,
+    usb::{QuantisRng, QuantisUsb},
+};
+use rand_core::TryRng;
 
 #[derive(Parser)]
 #[command(version, about)]
@@ -40,9 +46,9 @@ enum Commands {
     /// stdout.
     ///
     /// The output is binary, redirect it to a file or pipe it to another
-    /// program, or use --hex to print it on the terminal. On error the output
-    /// stops (it only contains bytes from the device) and the exit status
-    /// is 1.
+    /// program, or use --hex, --integers or --floats to print it on the
+    /// terminal. On error the output stops (it only contains data from the
+    /// device) and the exit status is 1.
     Read(ReadArgs),
 }
 
@@ -59,20 +65,62 @@ struct ReadArgs {
     #[command(flatten)]
     device: DeviceArgs,
 
-    /// Number of bytes to read, with optional suffix K, M or G (powers of
-    /// 1024), e.g. 4K or 10M. There is no upper limit.
+    /// Number of bytes to read (numbers with --integers or --floats), with
+    /// optional suffix K, M or G (powers of 1024), e.g. 4K or 10M. There is no
+    /// upper limit.
     #[arg(short = 'n', long = "size", default_value = "1024", value_parser = parse_size)]
     size: u64,
 
     /// Print the bytes as hex, 32 bytes per line.
-    #[arg(long)]
+    #[arg(long, conflicts_with = "numbers")]
     hex: bool,
+
+    /// Write integers, one per line, from --min to --max (both included).
+    /// Without them, any 32-bit signed integer.
+    #[arg(long, group = "numbers")]
+    integers: bool,
+
+    /// Write floats, one per line, from --min (included) to --max (excluded).
+    /// Without them, from 0 to 1.
+    #[arg(long, group = "numbers")]
+    floats: bool,
+
+    /// Smallest number, with --integers or --floats.
+    #[arg(long, requires_all = ["max", "numbers"], allow_negative_numbers = true)]
+    min: Option<String>,
+
+    /// Largest number, with --integers or --floats.
+    #[arg(long, requires_all = ["min", "numbers"], allow_negative_numbers = true)]
+    max: Option<String>,
+
+    /// Extract the bytes with the matrix in FILE, like `EasyQuantis -m` (e.g.
+    /// contrib/extractor/matrix.dat). It removes the bias of the raw
+    /// data, every block of --matrix-size-in bits becomes --matrix-size-out
+    /// bits.
+    #[arg(short, long, value_name = "FILE", conflicts_with = "numbers")]
+    matrix: Option<PathBuf>,
+
+    /// Input bits of the matrix, multiple of 64.
+    #[arg(long, default_value_t = 1024, requires = "matrix")]
+    matrix_size_in: usize,
+
+    /// Output bits of the matrix, multiple of 64 and lower than
+    /// --matrix-size-in.
+    #[arg(long, default_value_t = 768, requires = "matrix")]
+    matrix_size_out: usize,
 
     /// Write the bytes to FILE instead of stdout. The file is created, or
     /// overwritten if it exists. On Windows use it instead of `>`, the shell
     /// can change binary data.
     #[arg(short, long, value_name = "FILE")]
     output: Option<PathBuf>,
+}
+
+// output of --integers and --floats
+#[derive(Clone, Copy)]
+enum Numbers {
+    Integers(i64, i64),
+    Floats(f64, f64),
 }
 
 // bytes read and written at a time, so the memory used is the same for any
@@ -89,6 +137,8 @@ enum CliError {
     Output(io::Error),
     // can't create the output file
     CreateOutput(PathBuf, io::Error),
+    // can't read the matrix file
+    ReadMatrix(PathBuf, io::Error),
     // binary output on a terminal
     BinaryToTerminal,
 }
@@ -112,6 +162,9 @@ impl fmt::Display for CliError {
             CliError::Output(err) => write!(f, "cannot write the output: {err}"),
             CliError::CreateOutput(path, err) => {
                 write!(f, "cannot create {}: {err}", path.display())
+            }
+            CliError::ReadMatrix(path, err) => {
+                write!(f, "cannot read {}: {err}", path.display())
             }
             CliError::BinaryToTerminal => {
                 write!(f, "refusing to write binary data to a terminal")
@@ -198,14 +251,32 @@ fn probe(args: &DeviceArgs) -> Result<(), CliError> {
 }
 
 fn read(args: &ReadArgs) -> Result<(), CliError> {
+    // same exit as the other usage errors
+    let numbers = numbers(args)
+        .unwrap_or_else(|msg| clap::Error::raw(ErrorKind::ValueValidation, msg + "\n").exit());
+    let binary = !args.hex && numbers.is_none();
+
+    // before opening the device, like the checks on stdout
+    let matrix = match &args.matrix {
+        Some(path) => {
+            let matrix = fs::read(path).map_err(|err| CliError::ReadMatrix(path.clone(), err))?;
+            Some(Matrix::new(
+                &matrix,
+                args.matrix_size_in,
+                args.matrix_size_out,
+            )?)
+        }
+        None => None,
+    };
+
     // checks on stdout, before opening the device
     if args.output.is_none() {
-        if !args.hex && io::stdout().is_terminal() {
+        if binary && io::stdout().is_terminal() {
             return Err(CliError::BinaryToTerminal);
         }
         // on Windows the shell can re-encode binary data (Windows PowerShell
-        // converts it to UTF-16), hex is plain text so it's fine
-        if cfg!(windows) && !args.hex {
+        // converts it to UTF-16), text is fine
+        if cfg!(windows) && binary {
             eprintln!(
                 "qrng: warning: on Windows the shell can change binary data redirected with `>` or `|` \
                  (Windows PowerShell does), use `-o FILE` to write it safely"
@@ -227,17 +298,49 @@ fn read(args: &ReadArgs) -> Result<(), CliError> {
         None => Box::new(io::stdout().lock()),
     };
     let mut out = BufWriter::with_capacity(OUTPUT_CHUNK_SIZE, out);
-    let mut buf = vec![0u8; OUTPUT_CHUNK_SIZE];
+
+    if let Some(numbers) = numbers {
+        let mut rng = QuantisRng::new(quantis);
+        for _ in 0..args.size {
+            match numbers {
+                Numbers::Integers(min, max) => {
+                    writeln!(out, "{}", random_integer(&mut rng, min, max)?)?;
+                }
+                Numbers::Floats(min, max) => {
+                    writeln!(out, "{}", random_float(&mut rng, min, max)?)?;
+                }
+            }
+        }
+        out.flush()?;
+        return Ok(());
+    }
+
+    // with --matrix whole blocks are extracted, the rest of the last one is
+    // thrown away
+    let (bytes_in, bytes_out) = (args.matrix_size_in / 8, args.matrix_size_out / 8);
+    let blocks = matrix
+        .as_ref()
+        .map_or(0, |_| OUTPUT_CHUNK_SIZE.div_ceil(bytes_out));
+    let mut buf = vec![0u8; OUTPUT_CHUNK_SIZE.max(blocks * bytes_out)];
+    let mut raw = vec![0u8; blocks * bytes_in];
     let mut remaining = args.size;
 
     while remaining > 0 {
         // `remaining` could not fit in a usize on 32-bit targets
         let len =
             usize::try_from(remaining).map_or(OUTPUT_CHUNK_SIZE, |r| r.min(OUTPUT_CHUNK_SIZE));
-        let chunk = &mut buf[..len];
 
         // write only after a successful read, on error nothing of `chunk` is written
-        quantis.fill_bytes(chunk)?;
+        match &matrix {
+            Some(matrix) => {
+                let blocks = len.div_ceil(bytes_out);
+                let raw = &mut raw[..blocks * bytes_in];
+                quantis.fill_bytes(raw)?;
+                matrix.extract(raw, &mut buf[..blocks * bytes_out]);
+            }
+            None => quantis.fill_bytes(&mut buf[..len])?,
+        }
+        let chunk = &buf[..len];
         if args.hex {
             write_hex(&mut out, chunk)?;
         } else {
@@ -270,6 +373,72 @@ fn write_hex(out: &mut impl Write, data: &[u8]) -> io::Result<()> {
     Ok(())
 }
 
+// --integers or --floats with checked bounds, defaults of EasyQuantis
+fn numbers(args: &ReadArgs) -> Result<Option<Numbers>, String> {
+    let (min, max) = (args.min.as_deref(), args.max.as_deref());
+
+    if args.integers {
+        let parse = |s: &str| {
+            s.parse::<i64>()
+                .map_err(|_| format!("`{s}` is not a 64-bit integer"))
+        };
+        let min = min.map_or(Ok(i32::MIN.into()), parse)?;
+        let max = max.map_or(Ok(i32::MAX.into()), parse)?;
+        if min >= max {
+            return Err("--min must be lower than --max".into());
+        }
+        Ok(Some(Numbers::Integers(min, max)))
+    } else if args.floats {
+        let parse = |s: &str| match s.parse::<f64>() {
+            Ok(x) if x.is_finite() => Ok(x),
+            _ => Err(format!("`{s}` is not a finite number")),
+        };
+        let min = min.map_or(Ok(0.0), parse)?;
+        let max = max.map_or(Ok(1.0), parse)?;
+        if min >= max {
+            return Err("--min must be lower than --max".into());
+        }
+        // `max - min` is used for the scaling
+        if !(max - min).is_finite() {
+            return Err("the range from --min to --max is too large".into());
+        }
+        Ok(Some(Numbers::Floats(min, max)))
+    } else {
+        Ok(None)
+    }
+}
+
+// integer in `min..=max`, no modulo bias -> the highest 2^64 % range values
+// are thrown away
+fn random_integer<R: TryRng>(rng: &mut R, min: i64, max: i64) -> Result<i64, R::Error> {
+    // 0 -> all the 2^64 values
+    let range = max.abs_diff(min).wrapping_add(1);
+    let limit = match range {
+        0 => u64::MAX,
+        _ => u64::MAX - (u64::MAX % range + 1) % range,
+    };
+    loop {
+        let x = rng.try_next_u64()?;
+        if x <= limit {
+            return Ok(min.wrapping_add_unsigned(x.checked_rem(range).unwrap_or(x)));
+        }
+    }
+}
+
+// float in `min..max`
+fn random_float<R: TryRng>(rng: &mut R, min: f64, max: f64) -> Result<f64, R::Error> {
+    loop {
+        // 53 bits -> [0, 1), exact
+        #[expect(clippy::cast_precision_loss)]
+        let unit = (rng.try_next_u64()? >> 11) as f64 / (1u64 << 53) as f64;
+        // rounding can give `max` -> drawn again (`ConvertToFloat_01` can return 1.0)
+        let x = min + unit * (max - min);
+        if x < max {
+            return Ok(x);
+        }
+    }
+}
+
 // parses a size: digits with optional K, M or G (powers of 1024, also lowercase)
 fn parse_size(s: &str) -> Result<u64, String> {
     let (digits, multiplier) = match s.as_bytes().last() {
@@ -299,7 +468,9 @@ fn report(err: &CliError) {
 
     let mut source = match err {
         CliError::Device(err) => err.source(),
-        CliError::Output(err) | CliError::CreateOutput(_, err) => err.source(),
+        CliError::Output(err) | CliError::CreateOutput(_, err) | CliError::ReadMatrix(_, err) => {
+            err.source()
+        }
         CliError::BinaryToTerminal => None,
     };
     while let Some(cause) = source {
@@ -309,7 +480,7 @@ fn report(err: &CliError) {
 
     let hint = match err {
         CliError::Device(Error::PermissionDenied) => Some(
-            "on Linux, install contrib/udev/70-quantis-qrng.rules (see the README) and make sure your user is in the `plugdev` group",
+            "on Linux, install the udev rule 70-quantis-qrng.rules (see the README) and make sure your user is in the `plugdev` group",
         ),
         CliError::Device(Error::Busy) => Some("stop the other program that is using the device"),
         CliError::Device(Error::NoDevice) => Some("check the cable and `lsusb -d 0aba:0102`"),
@@ -335,9 +506,155 @@ fn report(err: &CliError) {
 
 #[cfg(test)]
 mod tests {
-    use std::fmt::Write as _;
+    use std::{convert::Infallible, fmt::Write as _};
 
-    use super::{HEX_LINE, parse_size, write_hex};
+    use clap::Parser as _;
+    use rand_core::TryRng;
+
+    use super::{
+        Cli, Commands, HEX_LINE, Numbers, numbers, parse_size, random_float, random_integer,
+        write_hex,
+    };
+
+    // returns the given values
+    struct Values<const N: usize>(std::array::IntoIter<u64, N>);
+
+    impl<const N: usize> TryRng for Values<N> {
+        type Error = Infallible;
+
+        fn try_next_u32(&mut self) -> Result<u32, Infallible> {
+            unreachable!()
+        }
+
+        fn try_next_u64(&mut self) -> Result<u64, Infallible> {
+            Ok(self.0.next().unwrap())
+        }
+
+        fn try_fill_bytes(&mut self, _dst: &mut [u8]) -> Result<(), Infallible> {
+            unreachable!()
+        }
+    }
+
+    #[test]
+    fn test_numbers() {
+        let cli = Cli::try_parse_from(["qrng", "read"]).unwrap();
+        let Commands::Read(args) = cli.command else {
+            unreachable!()
+        };
+        assert!(matches!(numbers(&args), Ok(None)));
+
+        let cli = Cli::try_parse_from(["qrng", "read", "--hex"]).unwrap();
+        let Commands::Read(args) = cli.command else {
+            unreachable!()
+        };
+        assert!(matches!(numbers(&args), Ok(None)));
+
+        // EasyQuantis defaults
+        let cli = Cli::try_parse_from(["qrng", "read", "--integers"]).unwrap();
+        let Commands::Read(args) = cli.command else {
+            unreachable!()
+        };
+        assert!(matches!(
+            numbers(&args),
+            Ok(Some(Numbers::Integers(-2_147_483_648, 2_147_483_647)))
+        ));
+
+        let cli = Cli::try_parse_from(["qrng", "read", "--floats"]).unwrap();
+        let Commands::Read(args) = cli.command else {
+            unreachable!()
+        };
+        assert!(matches!(
+            numbers(&args),
+            Ok(Some(Numbers::Floats(0.0, 1.0)))
+        ));
+
+        let cli = Cli::try_parse_from(["qrng", "read", "--integers", "--min", "-5", "--max", "5"])
+            .unwrap();
+        let Commands::Read(args) = cli.command else {
+            unreachable!()
+        };
+        assert!(matches!(numbers(&args), Ok(Some(Numbers::Integers(-5, 5)))));
+
+        let cli =
+            Cli::try_parse_from(["qrng", "read", "--floats", "--min", "-0.5", "--max", "1e3"])
+                .unwrap();
+        let Commands::Read(args) = cli.command else {
+            unreachable!()
+        };
+        assert!(matches!(
+            numbers(&args),
+            Ok(Some(Numbers::Floats(-0.5, 1000.0)))
+        ));
+    }
+
+    #[test]
+    fn test_numbers_rejects_invalid() {
+        for args in [
+            "--integers --min 6 --max 1",
+            "--integers --min 1 --max 1",
+            "--integers --min 1.5 --max 6",
+            "--integers --min 1 --max 9223372036854775808",
+            "--floats --min 1 --max 1",
+            "--floats --min inf --max 1",
+            "--floats --min 0 --max NaN",
+            "--floats --min -1e308 --max 1e308",
+        ] {
+            let cli = Cli::try_parse_from(format!("qrng read {args}").split_whitespace()).unwrap();
+            let Commands::Read(read) = cli.command else {
+                unreachable!()
+            };
+            assert!(numbers(&read).is_err(), "`{args}` accepted");
+        }
+    }
+
+    #[test]
+    fn test_random_integer_bounds() {
+        let cases = [
+            (-5, 5, 0, -5),
+            (-5, 5, 10, 5),
+            // power of 2 -> nothing thrown away
+            (0, 255, u64::MAX, 255),
+            (i64::MIN, i64::MAX, 0, i64::MIN),
+            (i64::MIN, i64::MAX, u64::MAX, i64::MAX),
+        ];
+        for (min, max, x, expected) in cases {
+            let n = random_integer(&mut Values([x].into_iter()), min, max).unwrap();
+            assert_eq!(n, expected, "{min}..={max} with {x}");
+        }
+    }
+
+    #[test]
+    fn test_random_integer_no_modulo_bias() {
+        // 2^64 % 6 = 4 -> the 4 highest values are thrown away
+        let mut rng = Values([u64::MAX, u64::MAX - 3, u64::MAX - 4].into_iter());
+        // (2^64 - 5) % 6 = 5
+        assert_eq!(random_integer(&mut rng, 1, 6).unwrap(), 6);
+        assert_eq!(rng.0.len(), 0);
+    }
+
+    #[test]
+    #[allow(clippy::float_cmp)] // exact values
+    fn test_random_float_bounds() {
+        assert_eq!(
+            random_float(&mut Values([0].into_iter()), 0.0, 1.0).unwrap(),
+            0.0
+        );
+        let x = random_float(&mut Values([u64::MAX].into_iter()), 0.0, 1.0).unwrap();
+        assert_eq!(x, 1.0 - f64::EPSILON / 2.0);
+        assert_eq!(
+            random_float(&mut Values([0].into_iter()), -3.0, 2.0).unwrap(),
+            -3.0
+        );
+    }
+
+    #[test]
+    #[allow(clippy::float_cmp)] // exact values
+    fn test_random_float_never_max() {
+        // 1e16 and 1e16 + 2 are next to each other -> the highest value rounds to `max`
+        let mut rng = Values([u64::MAX, 0].into_iter());
+        assert_eq!(random_float(&mut rng, 1e16, 1e16 + 2.0).unwrap(), 1e16);
+        assert_eq!(rng.0.len(), 0);
+    }
 
     #[test]
     fn test_parse_size() {

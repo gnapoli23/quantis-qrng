@@ -85,6 +85,10 @@ pub enum Error {
     #[error("unexpected USB descriptors: not a Quantis USB?")]
     UnexpectedDescriptor,
 
+    /// The extractor matrix has an invalid shape.
+    #[error("invalid extractor matrix: {0}")]
+    InvalidMatrix(String),
+
     /// The operating system can't do the operation on this device.
     ///
     /// On Windows it means that the device does not use the WinUSB driver,
@@ -110,7 +114,7 @@ impl From<Error> for std::io::Error {
             Error::Busy => ErrorKind::ResourceBusy,
             Error::NoDevice | Error::SerialNotFound(_) => ErrorKind::NotFound,
             Error::Unsupported(_) => ErrorKind::Unsupported,
-            Error::InvalidModuleMask(_) => ErrorKind::InvalidInput,
+            Error::InvalidModuleMask(_) | Error::InvalidMatrix(_) => ErrorKind::InvalidInput,
             Error::UnexpectedResponse { .. } | Error::UnexpectedDescriptor => {
                 ErrorKind::InvalidData
             }
@@ -155,6 +159,7 @@ mod tests {
             (Error::SerialNotFound("A".into()), ErrorKind::NotFound),
             (Error::Unsupported("winusb".into()), ErrorKind::Unsupported),
             (Error::InvalidModuleMask(0), ErrorKind::InvalidInput),
+            (Error::InvalidMatrix("size".into()), ErrorKind::InvalidInput),
             (
                 Error::UnexpectedResponse {
                     request: VendorRequest::GetBoardVersion,

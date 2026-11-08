@@ -89,58 +89,70 @@ mod tests {
     use super::select_device;
     use crate::error::Error;
 
-    fn select(candidates: &[Option<&'static str>], serial: Option<&str>) -> Result<usize, Error> {
-        let indexed: Vec<(usize, Option<&str>)> = candidates.iter().copied().enumerate().collect();
-        select_device(indexed, serial, |(_, s)| *s).map(|(i, _)| i)
-    }
+    // the candidates are the serial numbers, `select_device` returns the chosen one
 
     #[test]
     fn test_select_without_serial() {
-        assert!(matches!(select(&[], None), Err(Error::NoDevice)));
-        assert_eq!(select(&[Some("A")], None).unwrap(), 0);
-        assert_eq!(select(&[None], None).unwrap(), 0);
         assert!(matches!(
-            select(&[Some("A"), Some("B")], None),
+            select_device(Vec::<Option<&str>>::new(), None, |s| *s),
+            Err(Error::NoDevice)
+        ));
+        assert_eq!(
+            select_device(vec![Some("A")], None, |s| *s).unwrap(),
+            Some("A")
+        );
+        assert_eq!(select_device(vec![None], None, |s| *s).unwrap(), None);
+        assert!(matches!(
+            select_device(vec![Some("A"), Some("B")], None, |s| *s),
             Err(Error::TooManyDevices)
         ));
     }
 
     #[test]
     fn test_select_by_serial() {
-        let attached = [Some("A"), None, Some("B")];
-        assert_eq!(select(&attached, Some("A")).unwrap(), 0);
-        assert_eq!(select(&attached, Some("B")).unwrap(), 2);
+        let attached = vec![Some("A"), None, Some("B")];
+        assert_eq!(
+            select_device(attached.clone(), Some("A"), |s| *s).unwrap(),
+            Some("A")
+        );
+        assert_eq!(
+            select_device(attached.clone(), Some("B"), |s| *s).unwrap(),
+            Some("B")
+        );
 
         // exact match only
         assert!(matches!(
-            select(&attached, Some("a")),
+            select_device(attached.clone(), Some("a"), |s| *s),
             Err(Error::SerialNotFound(s)) if s == "a"
         ));
         assert!(matches!(
-            select(&attached, Some("")),
+            select_device(attached, Some(""), |s| *s),
             Err(Error::SerialNotFound(_))
         ));
 
         // a single device must still match the requested serial
         assert!(matches!(
-            select(&[Some("A")], Some("B")),
+            select_device(vec![Some("A")], Some("B"), |s| *s),
             Err(Error::SerialNotFound(_))
         ));
         assert!(matches!(
-            select(&[None], Some("A")),
+            select_device(vec![None], Some("A"), |s| *s),
             Err(Error::SerialNotFound(_))
         ));
     }
 
     #[test]
     fn test_select_by_serial_no_device() {
-        assert!(matches!(select(&[], Some("A")), Err(Error::NoDevice)));
+        assert!(matches!(
+            select_device(Vec::<Option<&str>>::new(), Some("A"), |s| *s),
+            Err(Error::NoDevice)
+        ));
     }
 
     #[test]
     fn test_select_duplicate_serial_is_refused() {
         assert!(matches!(
-            select(&[Some("A"), Some("A")], Some("A")),
+            select_device(vec![Some("A"), Some("A")], Some("A"), |s| *s),
             Err(Error::TooManyDevices)
         ));
     }

@@ -16,9 +16,13 @@ use crate::{
 
 mod discovery;
 pub mod protocol;
+#[cfg(feature = "rand_core")]
+mod rng;
 pub(crate) mod transport;
 
 pub use discovery::DeviceInfo;
+#[cfg(feature = "rand_core")]
+pub use rng::{QuantisCryptoRng, QuantisRng};
 pub use transport::TransportError;
 
 // max size of a single bulk request, in bytes
@@ -536,11 +540,6 @@ mod tests {
         },
     };
 
-    // the fake sends a counter -> byte `k` is `k % 256`
-    fn stream(range: std::ops::Range<usize>) -> Vec<u8> {
-        range.map(|k| (k % 256).to_le_bytes()[0]).collect()
-    }
-
     #[test]
     fn test_get_board_version() {
         let mut transport = FakeUsbTransport::default();
@@ -640,7 +639,13 @@ mod tests {
         quantis.fill_bytes(&mut buf).unwrap();
 
         assert_eq!(quantis.fake().bulk_in_requests, [512]);
-        assert_eq!(buf.as_slice(), stream(0..100).as_slice());
+        assert_eq!(
+            buf.as_slice(),
+            (0..100)
+                .map(|k: usize| (k % 256).to_le_bytes()[0])
+                .collect::<Vec<u8>>()
+                .as_slice()
+        );
     }
 
     #[test]
@@ -650,7 +655,13 @@ mod tests {
         quantis.fill_bytes(&mut buf).unwrap();
 
         assert_eq!(quantis.fake().bulk_in_requests, [1024]);
-        assert_eq!(buf.as_slice(), stream(0..1024).as_slice());
+        assert_eq!(
+            buf.as_slice(),
+            (0..1024)
+                .map(|k: usize| (k % 256).to_le_bytes()[0])
+                .collect::<Vec<u8>>()
+                .as_slice()
+        );
     }
 
     #[test]
@@ -661,12 +672,24 @@ mod tests {
 
         // 2 packets into `buf`, then 1 packet for the 76 bytes tail
         assert_eq!(quantis.fake().bulk_in_requests, [1024, 512]);
-        assert_eq!(buf.as_slice(), stream(0..1100).as_slice());
+        assert_eq!(
+            buf.as_slice(),
+            (0..1100)
+                .map(|k: usize| (k % 256).to_le_bytes()[0])
+                .collect::<Vec<u8>>()
+                .as_slice()
+        );
 
         // the other 436 bytes of the tail packet are thrown away
         let mut buf = [0u8; 512];
         quantis.fill_bytes(&mut buf).unwrap();
-        assert_eq!(buf.as_slice(), stream(1536..2048).as_slice());
+        assert_eq!(
+            buf.as_slice(),
+            (1536..2048)
+                .map(|k: usize| (k % 256).to_le_bytes()[0])
+                .collect::<Vec<u8>>()
+                .as_slice()
+        );
     }
 
     #[test]
@@ -677,7 +700,13 @@ mod tests {
         quantis.fill_bytes(&mut buf).unwrap();
 
         assert_eq!(quantis.fake().bulk_in_requests, [64, 64]);
-        assert_eq!(buf.as_slice(), stream(0..100).as_slice());
+        assert_eq!(
+            buf.as_slice(),
+            (0..100)
+                .map(|k: usize| (k % 256).to_le_bytes()[0])
+                .collect::<Vec<u8>>()
+                .as_slice()
+        );
     }
 
     #[test]
@@ -691,7 +720,12 @@ mod tests {
             quantis.fake().bulk_in_requests,
             [READ_CHUNK_SIZE, READ_CHUNK_SIZE, 7168, 512]
         );
-        assert_eq!(buf, stream(0..40_000));
+        assert_eq!(
+            buf,
+            (0..40_000)
+                .map(|k: usize| (k % 256).to_le_bytes()[0])
+                .collect::<Vec<u8>>()
+        );
     }
 
     #[test]
@@ -703,7 +737,13 @@ mod tests {
         let mut buf = [0u8; 150];
         quantis.fill_bytes(&mut buf).unwrap();
 
-        assert_eq!(buf.as_slice(), stream(0..150).as_slice());
+        assert_eq!(
+            buf.as_slice(),
+            (0..150)
+                .map(|k: usize| (k % 256).to_le_bytes()[0])
+                .collect::<Vec<u8>>()
+                .as_slice()
+        );
         // requests are still whole packets
         let requests = &quantis.fake().bulk_in_requests;
         assert_eq!(requests.len(), 15); // 10 bytes each
@@ -827,8 +867,20 @@ mod tests {
         quantis.fill_bytes(&mut first).unwrap();
         quantis.fill_bytes(&mut second).unwrap();
 
-        assert_eq!(first.as_slice(), stream(0..10).as_slice());
-        assert_eq!(second.as_slice(), stream(64..74).as_slice());
+        assert_eq!(
+            first.as_slice(),
+            (0..10)
+                .map(|k: usize| (k % 256).to_le_bytes()[0])
+                .collect::<Vec<u8>>()
+                .as_slice()
+        );
+        assert_eq!(
+            second.as_slice(),
+            (64..74)
+                .map(|k: usize| (k % 256).to_le_bytes()[0])
+                .collect::<Vec<u8>>()
+                .as_slice()
+        );
     }
 
     #[test]
@@ -870,7 +922,13 @@ mod tests {
 
         // same as `fill_bytes`
         assert_eq!(quantis.fake().bulk_in_requests, [1024, 512]);
-        assert_eq!(buf.as_slice(), stream(0..1100).as_slice());
+        assert_eq!(
+            buf.as_slice(),
+            (0..1100)
+                .map(|k: usize| (k % 256).to_le_bytes()[0])
+                .collect::<Vec<u8>>()
+                .as_slice()
+        );
     }
 
     #[test]
@@ -938,6 +996,11 @@ mod tests {
 
         // one request for 100 reads, nothing thrown away
         assert_eq!(quantis.fake().bulk_in_requests, [READ_CHUNK_SIZE]);
-        assert_eq!(out, stream(0..400));
+        assert_eq!(
+            out,
+            (0..400)
+                .map(|k: usize| (k % 256).to_le_bytes()[0])
+                .collect::<Vec<u8>>()
+        );
     }
 }
