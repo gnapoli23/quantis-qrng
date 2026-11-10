@@ -21,14 +21,14 @@ generators (QRNG).
 Library:
 
 ```sh
-cargo add quantis-qrng@0.1.0-alpha.1
-cargo add quantis-qrng@0.1.0-alpha.1 --features rand_core   # with `rand` support
+cargo add quantis-qrng@0.1.0
+cargo add quantis-qrng@0.1.0 --features rand_core   # with `rand` support
 ```
 
 `qrng` command-line tool:
 
 ```sh
-cargo install quantis-qrng --version 0.1.0-alpha.1 --features cli
+cargo install quantis-qrng --version 0.1.0 --features cli
 ```
 
 MSRV is Rust 1.85.
