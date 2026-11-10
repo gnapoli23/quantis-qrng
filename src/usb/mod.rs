@@ -303,10 +303,13 @@ impl QuantisUsb {
     /// start-up tests. The flag is cleared with
     /// [`clear_ais31_startup_tests_request_flag`](Self::clear_ais31_startup_tests_request_flag).
     ///
+    /// Some firmwares don't implement the AIS 31 requests.
+    ///
     /// # Errors
     ///
-    /// Returns an error if the transfer fails or the response is not 1 byte
-    /// long.
+    /// Returns [`TransportError::Stall`] if the firmware does not implement
+    /// the request, or an error if the transfer fails or the response is not
+    /// 1 byte long.
     pub fn ais31_startup_tests_request_flag(&mut self) -> Result<u8, Error> {
         Ok(u8::from_be_bytes(self.read_response(
             VendorRequest::GetAis31StartupTestsRequestFlag,
@@ -353,9 +356,12 @@ impl QuantisUsb {
 
     /// Clears the AIS 31 start-up tests request flag.
     ///
+    /// Some firmwares don't implement the AIS 31 requests.
+    ///
     /// # Errors
     ///
-    /// Returns an error if the transfer fails.
+    /// Returns [`TransportError::Stall`] if the firmware does not implement
+    /// the request, or an error if the transfer fails.
     pub fn clear_ais31_startup_tests_request_flag(&mut self) -> Result<(), Error> {
         Ok(self
             .transport

@@ -272,7 +272,7 @@ In no particular order:
 
 - **Quantis PCIe** with the ID Quantique kernel driver (`/dev/qrandomN`), by using `ioctl`.
 - **Async API**, nusb is already async.
-- **More `qrng` commands**: enable/disable the module, clear the AIS 31 flag.
+- **More `qrng` commands**: enable/disable the module.
 - **macOS and Windows** tests.
 
 ## Contributing

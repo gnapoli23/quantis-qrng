@@ -233,7 +233,6 @@ fn probe(args: &DeviceArgs) -> Result<(), CliError> {
     let modules_power = quantis.modules_power()?;
     let modules_rate = quantis.modules_rate()?;
     let module_mask = quantis.module_mask()?;
-    let ais31_flag = quantis.ais31_startup_tests_request_flag()?;
 
     // show data
     println!("Device: Quantis QRNG (USB)");
@@ -245,7 +244,6 @@ fn probe(args: &DeviceArgs) -> Result<(), CliError> {
     println!("Modules power: {modules_power}");
     println!("Modules rate: {modules_rate}");
     println!("Module mask: {module_mask}");
-    println!("AIS-31 flag: {ais31_flag}");
 
     Ok(())
 }
