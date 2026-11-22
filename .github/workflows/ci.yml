@@ -14,7 +14,7 @@ jobs:
     name: Test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: rustup toolchain install # version and components from rust-toolchain.toml
       - run: cargo build --all-targets # library alone, without the CLI
       - run: cargo build --all-targets --all-features
@@ -27,7 +27,7 @@ jobs:
     env:
       RUSTUP_TOOLCHAIN: "1.85" # keep in sync with rust-version in Cargo.toml
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: rustup toolchain install 1.85 --profile minimal --component clippy
       - run: cargo build --all-targets
       - run: cargo build --all-targets --all-features
@@ -38,7 +38,7 @@ jobs:
     name: Rustfmt
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: rustup toolchain install
       - run: cargo fmt --all --check
 
@@ -48,7 +48,7 @@ jobs:
     env:
       RUSTDOCFLAGS: -D warnings
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: rustup toolchain install
       - run: cargo doc --no-deps --all-features
 
@@ -61,6 +61,6 @@ jobs:
     env:
       RUSTUP_TOOLCHAIN: stable
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: rustup toolchain install stable --profile minimal --component clippy
       - run: cargo clippy --all-targets --all-features
