@@ -3,10 +3,9 @@
 Unofficial pure-Rust driver for ID Quantique **Quantis** quantum random number
 generators (QRNG).
 
-> [!WARNING]
-> Early development. The Quantis USB commands work on real hardware, reading
-> random data still has to be tested on a real device. No PCIe yet. Don't use
-> it in production.
+> [!NOTE]
+> Quantis USB is tested on a real device (Linux) and ready to use. No PCIe
+> yet.
 
 ## Goals
 
